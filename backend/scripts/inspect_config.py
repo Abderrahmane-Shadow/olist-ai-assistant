@@ -1,0 +1,13 @@
+from app.config import get_settings
+s = get_settings()
+print('APP_ENV:', s.APP_ENV)
+print('APP_HOST:', s.APP_HOST)
+print('APP_PORT:', s.APP_PORT)
+print('DB_HOST:', s.DB_HOST)
+print('DB_NAME:', s.DB_NAME)
+print('DB_READONLY_USER:', s.DB_READONLY_USER)
+print('GEMINI_MODEL (primary):', s.GEMINI_MODEL)
+print('GEMINI_FALLBACK_MODEL (secondary):', s.GEMINI_FALLBACK_MODEL)
+print('GEMINI_REQUEST_TIMEOUT:', s.GEMINI_REQUEST_TIMEOUT)
+print('GEMINI_API_KEY CONFIGURED:', bool(s.GEMINI_API_KEY and s.GEMINI_API_KEY.strip()))
+print('GEMINI_API_KEY LENGTH:', len(s.GEMINI_API_KEY) if s.GEMINI_API_KEY else 0)

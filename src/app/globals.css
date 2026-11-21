@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #ffffff;
+  --sidebar: #f8f9fa;
+  --border: #e5e7eb;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --accent: #169b75;
+  --accent-dark: #0f7a5c;
+  --accent-light: #e8f7f3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Minimal scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* Clean prose for AI messages */
+.prose-clean {
+  color: #1f2937;
+  line-height: 1.75;
+  font-size: 0.9375rem;
+}
+
+.prose-clean p {
+  margin-bottom: 0.9em;
+}
+
+.prose-clean p:last-child {
+  margin-bottom: 0;
+}
+
+.prose-clean strong {
+  color: #111827;
+  font-weight: 600;
+}
+
+.prose-clean h2,
+.prose-clean h3,
+.prose-clean h4 {
+  color: #111827;
+  font-weight: 600;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+}
+
+.prose-clean h3 {
+  font-size: 0.9375rem;
+}
+
+.prose-clean ul,
+.prose-clean ol {
+  padding-left: 1.25rem;
+  margin-bottom: 0.9em;
+}
+
+.prose-clean li {
+  margin-bottom: 0.3em;
+}
+
+.prose-clean blockquote {
+  border-left: 3px solid #169b75;
+  padding: 0.5rem 0.875rem;
+  margin: 1rem 0;
+  color: #4b5563;
+  background: #f0faf7;
+  border-radius: 0 4px 4px 0;
+  font-style: normal;
+}
+
+.prose-clean code {
+  background: #f3f4f6;
+  padding: 0.125rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.84em;
+  color: #1f2937;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}

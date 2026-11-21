@@ -1,0 +1,88 @@
+# ==============================================================================
+# Git Ignore Configuration - Olist AI Assistant
+# ==============================================================================
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+backend/.venv/
+.venv/
+env/
+venv/
+
+# Environment Variables & Local Secrets
+.env
+.env*
+!.env.example
+!backend/.env.example
+backend/.env
+backend/.env*
+!backend/.env.example
+
+# Credentials, Keys & Certificates
+*.pem
+*.key
+*.cert
+*.crt
+*.id_rsa
+id_rsa*
+service_role*.json
+service-role*.json
+credentials.json
+client_secret*.json
+
+# Datasets & Database Dumps
+*.csv
+*.tsv
+*.dump
+*.sql.dump
+*.sql.gz
+*.tar
+*.tar.gz
+*.bak
+*.backup
+olist_dump.sql
+*.sqlite
+*.sqlite3
+*.db
+
+# Build & Cache Outputs
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+.eslintcache
+
+# Python Cache & Testing
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Logs & Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+test_*.png
+temp_*.json
+
+# OS & Editor Artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
