@@ -19,12 +19,6 @@ BEGIN
     END IF;
 END $$;
 
--- Define auth.uid() if not already defined (standard Supabase function)
-CREATE OR REPLACE FUNCTION auth.uid() 
-RETURNS uuid AS $$
-    SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid;
-$$ LANGUAGE sql STABLE;
-
 -- 3. Public User Profiles Table
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -181,8 +175,28 @@ BEGIN
     END IF;
 END $$;
 
--- 9. Explicitly ensure olist_readonly user CANNOT access user tables
-REVOKE ALL PRIVILEGES ON public.profiles FROM olist_readonly;
-REVOKE ALL PRIVILEGES ON public.conversations FROM olist_readonly;
-REVOKE ALL PRIVILEGES ON public.messages FROM olist_readonly;
-REVOKE ALL PRIVILEGES ON public.user_daily_usage FROM olist_readonly;
+-- 9. Least-privilege role configuration and isolation for olist_readonly (if role exists)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'olist_readonly') THEN
+        -- Grant schema usage
+        GRANT USAGE ON SCHEMA public TO olist_readonly;
+
+        -- Explicitly grant SELECT ONLY on the 9 approved Olist analytics tables
+        GRANT SELECT ON TABLE public.customers TO olist_readonly;
+        GRANT SELECT ON TABLE public.geolocation TO olist_readonly;
+        GRANT SELECT ON TABLE public.orders TO olist_readonly;
+        GRANT SELECT ON TABLE public.order_items TO olist_readonly;
+        GRANT SELECT ON TABLE public.order_payments TO olist_readonly;
+        GRANT SELECT ON TABLE public.order_reviews TO olist_readonly;
+        GRANT SELECT ON TABLE public.products TO olist_readonly;
+        GRANT SELECT ON TABLE public.sellers TO olist_readonly;
+        GRANT SELECT ON TABLE public.product_category_name_translation TO olist_readonly;
+
+        -- Explicitly revoke access to user & conversation tables
+        REVOKE ALL PRIVILEGES ON TABLE public.profiles FROM olist_readonly;
+        REVOKE ALL PRIVILEGES ON TABLE public.conversations FROM olist_readonly;
+        REVOKE ALL PRIVILEGES ON TABLE public.messages FROM olist_readonly;
+        REVOKE ALL PRIVILEGES ON TABLE public.user_daily_usage FROM olist_readonly;
+    END IF;
+END $$;

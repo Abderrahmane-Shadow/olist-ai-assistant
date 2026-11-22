@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import { Loader2 } from 'lucide-react';
 import { Sidebar } from '@/components/Sidebar';
 import { ChatHeader } from '@/components/ChatHeader';
 import { WelcomeScreen } from '@/components/WelcomeScreen';
@@ -60,81 +62,24 @@ const createDefaultConversation = (): Conversation => {
 };
 
 export default function Home() {
-  const { user, token, setDailyUsage } = useAuth();
+  const router = useRouter();
+  const { user, token, isLoading: isAuthLoading } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingMap, setLoadingMap] = useState<Record<string, boolean>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isClient, setIsClient] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const abortTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const abortControllersRef = useRef<Record<string, AbortController>>({});
 
-  // Sync conversations from backend when logged in, or localStorage for guests
+  // Route protection: redirect unauthenticated users to /login immediately
   useEffect(() => {
-    setIsClient(true);
-
-    if (token) {
-      // Fetch authenticated conversations from PostgreSQL backend
-      fetch(`${API_BASE_URL}/api/conversations`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => {
-          if (data && Array.isArray(data) && data.length > 0) {
-            const mapped: Conversation[] = data.map((item: any) => ({
-              id: item.id,
-              title: item.title,
-              createdAt: new Date(item.created_at).getTime(),
-              updatedAt: new Date(item.updated_at).getTime(),
-              messages: [], // Will load on selection if needed
-            }));
-            setConversations(mapped);
-            setActiveId(mapped[0].id);
-            // Load messages for the active conversation
-            loadConversationMessages(mapped[0].id, token);
-          } else {
-            const initial = createDefaultConversation();
-            setConversations([initial]);
-            setActiveId(initial.id);
-          }
-        })
-        .catch((err) => {
-          console.warn('Could not fetch server conversations, using local state:', err);
-          loadFromLocalStorage();
-        });
-    } else {
-      loadFromLocalStorage();
+    if (!isAuthLoading && !user) {
+      router.replace('/login');
     }
-  }, [token]);
-
-  const loadFromLocalStorage = () => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      const savedActiveId = localStorage.getItem(ACTIVE_CONV_KEY);
-
-      if (saved) {
-        const parsed: Conversation[] = JSON.parse(saved);
-        if (parsed.length > 0) {
-          setConversations(parsed);
-          setActiveId(
-            parsed.some((c) => c.id === savedActiveId) ? savedActiveId : parsed[0].id
-          );
-          return;
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load conversations from localStorage:', err);
-    }
-
-    const initial = createDefaultConversation();
-    setConversations([initial]);
-    setActiveId(initial.id);
-  };
+  }, [user, isAuthLoading, router]);
 
   const loadConversationMessages = useCallback(
     async (convId: string, authToken: string) => {
@@ -181,20 +126,48 @@ export default function Home() {
     []
   );
 
-  // Save to localStorage when unauthenticated
+  // Sync conversations from backend when logged in
   useEffect(() => {
-    if (!isClient || conversations.length === 0 || token) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
-      if (activeId) {
-        localStorage.setItem(ACTIVE_CONV_KEY, activeId);
-      }
-    } catch (err) {
-      console.error('Failed to save conversations to localStorage:', err);
+    setIsClient(true);
+
+    if (token) {
+      // Fetch authenticated conversations from PostgreSQL backend
+      fetch(`${API_BASE_URL}/api/conversations`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && Array.isArray(data) && data.length > 0) {
+            const mapped: Conversation[] = data.map((item: any) => ({
+              id: item.id,
+              title: item.title,
+              createdAt: new Date(item.created_at).getTime(),
+              updatedAt: new Date(item.updated_at).getTime(),
+              messages: [], // Will load on selection if needed
+            }));
+            setConversations(mapped);
+            setActiveId(mapped[0].id);
+            // Load messages for the active conversation
+            loadConversationMessages(mapped[0].id, token);
+          } else {
+            const initial = createDefaultConversation();
+            setConversations([initial]);
+            setActiveId(initial.id);
+          }
+        })
+        .catch((err) => {
+          console.warn('Could not fetch server conversations:', err);
+          const initial = createDefaultConversation();
+          setConversations([initial]);
+          setActiveId(initial.id);
+        });
     }
-  }, [conversations, activeId, isClient, token]);
+  }, [token, loadConversationMessages]);
 
   const activeConversation = conversations.find((c) => c.id === activeId) || null;
+  const isActiveLoading = Boolean(activeId && loadingMap[activeId]);
 
   const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -202,7 +175,7 @@ export default function Home() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [activeConversation?.messages.length, isLoading]);
+  }, [activeConversation?.messages.length, isActiveLoading]);
 
   // Handler: Select conversation & load messages if needed
   const handleSelectConversation = (id: string) => {
@@ -291,17 +264,21 @@ export default function Home() {
     localStorage.removeItem(ACTIVE_CONV_KEY);
   };
 
-  // Handler: Stop generation
-  const handleStopGeneration = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+  // Handler: Stop generation for a specific conversation (defaults to active)
+  const handleStopGeneration = (convId?: string) => {
+    const targetId = convId || activeId;
+    if (!targetId) return;
+
+    const controller = abortControllersRef.current[targetId];
+    if (controller) {
+      controller.abort();
+      delete abortControllersRef.current[targetId];
     }
-    if (abortTimeoutRef.current) {
-      clearTimeout(abortTimeoutRef.current);
-      abortTimeoutRef.current = null;
-    }
-    setIsLoading(false);
+    setLoadingMap((prev) => {
+      const next = { ...prev };
+      delete next[targetId];
+      return next;
+    });
   };
 
   // Helper: Request AI/Analytics answer
@@ -338,29 +315,8 @@ export default function Home() {
         signal: controller.signal,
       });
 
-      // Handle Quota Limit Exceeded (HTTP 429)
-      if (res.status === 429) {
-        const errData = await res.json().catch(() => ({}));
-        setDailyUsage((prev) => (prev ? { ...prev, remaining: 0, used: prev.limit } : null));
-
-        return {
-          id: 'msg-' + Date.now(),
-          sender: 'assistant',
-          text: `⚠️ **Daily Question Quota Reached**\n\n${
-            errData.detail ||
-            'You have reached your daily quota of 15 questions. Your quota will automatically reset tomorrow at midnight UTC.'
-          }\n\n*If you are an evaluator or team member requiring higher limits, please contact the administrator.*`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
-      }
-
       if (res.ok) {
         const data: BackendChatResponse = await res.json();
-
-        // Update daily usage state if returned by backend
-        if (data.daily_usage) {
-          setDailyUsage(data.daily_usage);
-        }
 
         // Return real analytical response
         return {
@@ -400,7 +356,7 @@ export default function Home() {
 
   // Handler: Send Message
   const handleSendMessage = async (text: string) => {
-    if (!text.trim() || isLoading) return;
+    if (!text.trim()) return;
 
     let targetConvId = activeId;
 
@@ -410,6 +366,9 @@ export default function Home() {
       targetConvId = newConv.id;
       setActiveId(targetConvId);
     }
+
+    // Prevent duplicate submissions in the same conversation
+    if (loadingMap[targetConvId]) return;
 
     const userMessage: Message = {
       id: 'msg-' + Date.now(),
@@ -439,39 +398,49 @@ export default function Home() {
       })
     );
 
-    setIsLoading(true);
+    // Set loading for this specific conversation
+    setLoadingMap((prev) => ({ ...prev, [targetConvId!]: true }));
 
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    abortControllersRef.current[targetConvId] = controller;
 
-    try {
-      const aiMessage = await fetchAssistantReply(text, targetConvId, controller);
+    // Execute query asynchronously to enable parallel multi-conversation interactions
+    (async (convId: string) => {
+      try {
+        const aiMessage = await fetchAssistantReply(text, convId, controller);
 
-      setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id === targetConvId) {
-            return {
-              ...c,
-              updatedAt: Date.now(),
-              messages: [...c.messages, aiMessage],
-            };
-          }
-          return c;
-        })
-      );
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Error getting response:', err);
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id === convId) {
+              return {
+                ...c,
+                updatedAt: Date.now(),
+                messages: [...c.messages, aiMessage],
+              };
+            }
+            return c;
+          })
+        );
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error(`Error in conversation ${convId}:`, err);
+        }
+      } finally {
+        setLoadingMap((prev) => {
+          const next = { ...prev };
+          delete next[convId];
+          return next;
+        });
+        delete abortControllersRef.current[convId];
       }
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
-    }
+    })(targetConvId);
   };
 
   // Handler: Regenerate last AI response
   const handleRegenerate = async () => {
-    if (!activeConversation || activeConversation.messages.length < 2 || isLoading) return;
+    if (!activeConversation || activeConversation.messages.length < 2) return;
+    const targetConvId = activeId;
+    if (!targetConvId || loadingMap[targetConvId]) return;
 
     const lastUserMsg = [...activeConversation.messages]
       .reverse()
@@ -481,7 +450,7 @@ export default function Home() {
 
     setConversations((prev) =>
       prev.map((c) => {
-        if (c.id === activeId) {
+        if (c.id === targetConvId) {
           return {
             ...c,
             messages: c.messages.filter((_, idx) => idx !== c.messages.length - 1),
@@ -491,37 +460,55 @@ export default function Home() {
       })
     );
 
-    setIsLoading(true);
+    setLoadingMap((prev) => ({ ...prev, [targetConvId]: true }));
 
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    abortControllersRef.current[targetConvId] = controller;
 
-    try {
-      const aiMessage = await fetchAssistantReply(lastUserMsg.text, activeId || '', controller);
+    (async (convId: string) => {
+      try {
+        const aiMessage = await fetchAssistantReply(lastUserMsg.text, convId, controller);
 
-      setConversations((prev) =>
-        prev.map((c) => {
-          if (c.id === activeId) {
-            return {
-              ...c,
-              updatedAt: Date.now(),
-              messages: [...c.messages, aiMessage],
-            };
-          }
-          return c;
-        })
-      );
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Error regenerating response:', err);
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id === convId) {
+              return {
+                ...c,
+                updatedAt: Date.now(),
+                messages: [...c.messages, aiMessage],
+              };
+            }
+            return c;
+          })
+        );
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error(`Error regenerating in conversation ${convId}:`, err);
+        }
+      } finally {
+        setLoadingMap((prev) => {
+          const next = { ...prev };
+          delete next[convId];
+          return next;
+        });
+        delete abortControllersRef.current[convId];
       }
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
-    }
+    })(targetConvId);
   };
 
   const hasMessages = Boolean(activeConversation && activeConversation.messages.length > 0);
+
+  // If loading authentication status or unauthenticated, do not render chat interface
+  if (isAuthLoading || !user) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-[#f8fafc]">
+        <div className="flex items-center gap-3 text-[#169b75]">
+          <Loader2 className="w-6 h-6 animate-spin" />
+          <span className="text-sm font-medium text-gray-700">Verifying session...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-white min-w-0">
@@ -529,6 +516,7 @@ export default function Home() {
       <Sidebar
         conversations={conversations}
         activeId={activeId}
+        loadingMap={loadingMap}
         onSelectConversation={handleSelectConversation}
         onNewChat={handleNewChat}
         onDeleteConversation={handleDeleteConversation}
@@ -570,7 +558,9 @@ export default function Home() {
                 );
               })}
 
-              {isLoading && <LoadingIndicator onStop={handleStopGeneration} />}
+              {isActiveLoading && (
+                <LoadingIndicator onStop={() => activeId && handleStopGeneration(activeId)} />
+              )}
 
               <div ref={messagesEndRef} className="h-4" />
             </div>
@@ -580,8 +570,8 @@ export default function Home() {
         {/* Bottom Sticky Chat Input */}
         <ChatInput
           onSendMessage={handleSendMessage}
-          isLoading={isLoading}
-          onStop={handleStopGeneration}
+          isLoading={isActiveLoading}
+          onStop={() => activeId && handleStopGeneration(activeId)}
         />
       </div>
 

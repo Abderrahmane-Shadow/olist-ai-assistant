@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     DB_READONLY_USER: str = "olist_readonly"
     DB_READONLY_PASSWORD: str = "olist_readonly_2026"
 
-    # Direct database URL override (optional)
+    # Direct database URL overrides (optional, auto-normalized to postgresql+psycopg://)
     DATABASE_URL: str | None = None
+    DATABASE_RO_URL: str | None = None
 
     # Google Gemini API configuration
     GEMINI_API_KEY: str | None = None
@@ -54,8 +55,9 @@ class Settings(BaseSettings):
     SUPABASE_JWT_PUBLIC_KEY: str | None = None
     SUPABASE_JWT_ALGORITHMS: str = "HS256,RS256,ES256"
     REQUIRE_AUTH: bool = True
-    MAX_DAILY_QUESTIONS_PER_USER: int = 15
-    MAX_CONCURRENT_REQUESTS_PER_USER: int = 2
+    # Concurrency and Quota Settings (Local Deployment: Unlimited daily questions, generous local concurrency)
+    MAX_DAILY_QUESTIONS_PER_USER: int = 999999
+    MAX_CONCURRENT_REQUESTS_PER_USER: int = 5
 
     @computed_field
     @property
@@ -69,8 +71,22 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_database_url(self) -> str:
         """Construct PostgreSQL SQLAlchemy database URL using psycopg driver."""
-        if self.DATABASE_URL:
-            return self.DATABASE_URL
+        url = self.DATABASE_URL
+        if url:
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+psycopg://" + url[len("postgresql://"):]
+            # Safely encode literal '@' or special characters in password if unencoded
+            if url.count("@") > 1:
+                prefix, rest = url.split("://", 1)
+                auth_part, host_part = rest.rsplit("@", 1)
+                if ":" in auth_part:
+                    user_part, pw_part = auth_part.split(":", 1)
+                    from urllib.parse import quote_plus, unquote
+                    encoded_pw = quote_plus(unquote(pw_part))
+                    url = f"{prefix}://{user_part}:{encoded_pw}@{host_part}"
+            return url
         return (
             f"postgresql+psycopg://{self.DB_USER}:{self.DB_PASSWORD}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
@@ -80,6 +96,22 @@ class Settings(BaseSettings):
     @property
     def readonly_database_url(self) -> str:
         """Construct read-only database URL for safe dynamic SQL execution."""
+        url = self.DATABASE_RO_URL
+        if url:
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg://" + url[len("postgres://"):]
+            elif url.startswith("postgresql://"):
+                url = "postgresql+psycopg://" + url[len("postgresql://"):]
+            # Safely encode literal '@' or special characters in password if unencoded
+            if url.count("@") > 1:
+                prefix, rest = url.split("://", 1)
+                auth_part, host_part = rest.rsplit("@", 1)
+                if ":" in auth_part:
+                    user_part, pw_part = auth_part.split(":", 1)
+                    from urllib.parse import quote_plus, unquote
+                    encoded_pw = quote_plus(unquote(pw_part))
+                    url = f"{prefix}://{user_part}:{encoded_pw}@{host_part}"
+            return url
         return (
             f"postgresql+psycopg://{self.DB_READONLY_USER}:{self.DB_READONLY_PASSWORD}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"

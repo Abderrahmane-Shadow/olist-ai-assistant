@@ -13,6 +13,7 @@ import {
   LogOut,
   User as UserIcon,
   ShieldCheck,
+  Loader2,
 } from 'lucide-react';
 import { Conversation } from '@/types/chat';
 import { useAuth } from '@/context/AuthContext';
@@ -20,6 +21,7 @@ import { useAuth } from '@/context/AuthContext';
 interface SidebarProps {
   conversations: Conversation[];
   activeId: string | null;
+  loadingMap?: Record<string, boolean>;
   onSelectConversation: (id: string) => void;
   onNewChat: () => void;
   onDeleteConversation: (id: string) => void;
@@ -32,6 +34,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
   conversations,
   activeId,
+  loadingMap,
   onSelectConversation,
   onNewChat,
   onDeleteConversation,
@@ -104,11 +107,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                 }`}
               >
-                <MessageSquare
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    isActive ? 'text-[#169b75]' : 'text-gray-400'
-                  }`}
-                />
+                {loadingMap?.[conv.id] ? (
+                  <Loader2 className="w-3.5 h-3.5 shrink-0 text-[#169b75] animate-spin" />
+                ) : (
+                  <MessageSquare
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      isActive ? 'text-[#169b75]' : 'text-gray-400'
+                    }`}
+                  />
+                )}
 
                 {isEditing ? (
                   /* Rename form — isolated from parent click via stopPropagation on form */

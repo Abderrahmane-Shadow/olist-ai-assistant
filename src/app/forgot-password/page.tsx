@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { BarChart2, Mail, ArrowRight, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -11,9 +11,21 @@ export default function ForgotPasswordPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+
+  // 60-second cooldown timer
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setInterval(() => {
+      setCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldown]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting || cooldown > 0 || !email.trim()) return;
+
     setError(null);
     setSuccess(null);
     setIsSubmitting(true);
@@ -21,12 +33,38 @@ export default function ForgotPasswordPage() {
     try {
       const res = await resetPassword(email.trim());
       if (res.error) {
-        setError(res.error);
+        const isRateLimit =
+          res.error.toLowerCase().includes('rate') ||
+          res.error.toLowerCase().includes('limit') ||
+          res.error.toLowerCase().includes('wait') ||
+          res.error.toLowerCase().includes('seconds');
+
+        if (isRateLimit) {
+          setError(
+            'For security, password reset requests are temporarily rate-limited. Please wait 60 seconds before requesting another recovery email.'
+          );
+          setCooldown(60);
+        } else {
+          setError(res.error);
+        }
       } else {
-        setSuccess('Password reset link sent! Check your inbox for instructions.');
+        setSuccess('Password reset link sent! Check your email inbox for recovery instructions.');
+        setCooldown(60);
       }
     } catch (err: any) {
-      setError(err?.message || 'Failed to send reset link.');
+      const msg = err?.message || 'Failed to send reset link.';
+      if (
+        msg.toLowerCase().includes('rate') ||
+        msg.toLowerCase().includes('limit') ||
+        msg.toLowerCase().includes('wait')
+      ) {
+        setError(
+          'For security, password reset requests are temporarily rate-limited. Please wait 60 seconds before requesting another recovery email.'
+        );
+        setCooldown(60);
+      } else {
+        setError(msg);
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -85,14 +123,16 @@ export default function ForgotPasswordPage() {
 
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-[#169b75] hover:bg-[#0f7a5c] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#169b75] disabled:opacity-50 transition-colors shadow-sm"
+              disabled={isSubmitting || cooldown > 0 || !email.trim()}
+              className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 px-4 border border-transparent rounded-lg text-sm font-medium text-white bg-[#169b75] hover:bg-[#0f7a5c] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#169b75] disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   <span>Sending reset link...</span>
                 </>
+              ) : cooldown > 0 ? (
+                <span>Resend available in {cooldown}s</span>
               ) : (
                 <>
                   <span>Send Reset Link</span>

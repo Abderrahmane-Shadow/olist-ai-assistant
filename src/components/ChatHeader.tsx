@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { Menu, Plus, Trash2, User, LogOut, ShieldCheck, Zap } from 'lucide-react';
+import { Menu, Plus, Trash2, User, LogOut } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 
 interface ChatHeaderProps {
@@ -20,7 +20,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   title,
   hasMessages,
 }) => {
-  const { user, profile, dailyUsage, signOut } = useAuth();
+  const { user, profile, signOut } = useAuth();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -33,11 +33,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  const isAdmin = profile?.role === 'admin';
-  const remaining = dailyUsage ? dailyUsage.remaining : 15;
-  const used = dailyUsage ? dailyUsage.used : 0;
-  const limit = dailyUsage ? dailyUsage.limit : 15;
 
   return (
     <header
@@ -60,36 +55,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 
       {/* Right */}
       <div className="flex items-center gap-2">
-        {/* Daily Quota Badge */}
-        {user && (
-          <div
-            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
-              isAdmin
-                ? 'bg-purple-50 text-purple-700 border-purple-200'
-                : remaining <= 2
-                ? 'bg-red-50 text-red-700 border-red-200'
-                : remaining <= 5
-                ? 'bg-amber-50 text-amber-700 border-amber-200'
-                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-            }`}
-            title={isAdmin ? 'Administrator with unlimited access' : `${used} of ${limit} queries used today`}
-          >
-            {isAdmin ? (
-              <>
-                <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
-                <span>Admin (Unlimited)</span>
-              </>
-            ) : (
-              <>
-                <Zap className="w-3.5 h-3.5 text-[#169b75]" />
-                <span>
-                  {remaining}/{limit} left
-                </span>
-              </>
-            )}
-          </div>
-        )}
-
         {hasMessages && onClearActiveChat && (
           <button
             onClick={onClearActiveChat}
@@ -128,10 +93,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
                     {profile?.display_name || 'Analytics User'}
                   </p>
                   <p className="text-gray-500 truncate text-[11px] mt-0.5">{user.email}</p>
-                  <div className="mt-2 flex items-center gap-1.5 text-[11px] text-gray-600 sm:hidden">
-                    <Zap className="w-3 h-3 text-[#169b75]" />
-                    <span>Quota: {isAdmin ? 'Unlimited' : `${remaining}/${limit} left today`}</span>
-                  </div>
                 </div>
 
                 <button

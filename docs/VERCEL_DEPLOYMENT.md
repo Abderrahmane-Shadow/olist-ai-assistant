@@ -29,7 +29,7 @@ This guide outlines how to deploy the **Olist AI Assistant Next.js Frontend** to
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | `https://your-render-backend.onrender.com` | Live FastAPI backend URL |
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://<ref>.supabase.co` | Supabase Project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `ey...` | Supabase Public Anon Key |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `sb_publishable_...` (or `ey...`) | Supabase Publishable Key (or Anon Key) |
 
 6. Click **Deploy**.
 

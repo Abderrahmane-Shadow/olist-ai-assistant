@@ -2,7 +2,7 @@ import asyncio
 import logging
 import threading
 from datetime import date, datetime, timezone
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any
 from uuid import UUID
 
 import jwt
@@ -23,6 +23,29 @@ security = HTTPBearer(auto_error=False)
 # In-memory concurrent request tracker per user UUID
 _active_user_requests: Dict[str, int] = {}
 _lock = threading.Lock()
+
+# Thread-safe JWKS client cache for asymmetric token verification & key rotation
+_jwk_clients: Dict[str, Any] = {}
+_jwk_lock = threading.Lock()
+
+
+def get_jwk_client(supabase_url: str):
+    """Retrieve or create a thread-safe cached PyJWKClient with automatic key caching and rotation."""
+    from jwt import PyJWKClient
+
+    base_url = supabase_url.rstrip("/")
+    if base_url not in _jwk_clients:
+        with _jwk_lock:
+            if base_url not in _jwk_clients:
+                jwks_url = f"{base_url}/auth/v1/.well-known/jwks.json"
+                _jwk_clients[base_url] = PyJWKClient(
+                    jwks_url,
+                    cache_keys=True,
+                    max_cached_keys=16,
+                    cache_jwk_set=True,
+                    lifespan=300,  # 5-minute rotation window
+                )
+    return _jwk_clients[base_url]
 
 
 class AuthenticatedUser(BaseModel):
@@ -99,11 +122,23 @@ def verify_supabase_jwt(token: str) -> dict:
     # 2. Select cryptographic key according to algorithm
     if alg in ("RS256", "ES256"):
         key = settings.SUPABASE_JWT_PUBLIC_KEY
+        if not key and settings.SUPABASE_URL:
+            try:
+                jwk_client = get_jwk_client(settings.SUPABASE_URL)
+                signing_key = jwk_client.get_signing_key_from_jwt(token)
+                key = signing_key.key
+            except Exception as jwks_err:
+                logger.warning("JWKS key resolution failed for token (kid=%s): %s", header.get("kid"), jwks_err)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Invalid authentication token: JWKS key resolution failed ({jwks_err}).",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
         if not key:
-            logger.error("Received asymmetric JWT (%s) but SUPABASE_JWT_PUBLIC_KEY is not configured.", alg)
+            logger.error("Received asymmetric JWT (%s) but neither SUPABASE_JWT_PUBLIC_KEY nor SUPABASE_URL is configured.", alg)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Asymmetric token ({alg}) cannot be verified: SUPABASE_JWT_PUBLIC_KEY is not configured.",
+                detail=f"Asymmetric token ({alg}) cannot be verified: neither SUPABASE_JWT_PUBLIC_KEY nor SUPABASE_URL is configured.",
             )
     else:
         key = settings.SUPABASE_JWT_SECRET or "olist_super_secret_jwt_2026_dev_key_secure_32b"
@@ -283,31 +318,13 @@ async def get_current_user(
 
 
 def check_and_increment_daily_usage(user: AuthenticatedUser, db: Session) -> Tuple[int, int]:
-    """Check daily question quota for user.
-    Admins are exempt from daily question quotas.
-    Returns (used_count, limit).
-    Raises HTTP 429 if quota exceeded.
+    """Track daily question usage for user without blocking or quota limits.
+    In this local personal deployment, all users have unlimited daily questions.
+    Returns (used_count, unlimited_limit).
     """
-    if user.role == "admin":
-        return 0, 999999  # Unlimited for admins
-
     today = date.today()
-    sql_check = text("""
-        SELECT question_count FROM public.user_daily_usage
-        WHERE user_id = :user_id AND usage_date = :today
-    """)
-    row = db.execute(sql_check, {"user_id": user.id, "today": today}).first()
-    current_count = row[0] if row else 0
 
-    limit = user.daily_question_limit
-    if current_count >= limit:
-        logger.warning("User %s exceeded daily question limit (%d/%d)", user.email, current_count, limit)
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Daily question limit reached ({current_count}/{limit} questions used today). Please try again tomorrow or contact an administrator for higher quotas.",
-        )
-
-    # Upsert increment
+    # Upsert increment for usage analytics
     sql_upsert = text("""
         INSERT INTO public.user_daily_usage (user_id, usage_date, question_count, updated_at)
         VALUES (:user_id, :today, 1, NOW())
@@ -315,10 +332,14 @@ def check_and_increment_daily_usage(user: AuthenticatedUser, db: Session) -> Tup
         DO UPDATE SET question_count = public.user_daily_usage.question_count + 1, updated_at = NOW()
         RETURNING question_count;
     """)
-    new_count = db.execute(sql_upsert, {"user_id": user.id, "today": today}).scalar()
-    db.commit()
-
-    return new_count or (current_count + 1), limit
+    try:
+        new_count = db.execute(sql_upsert, {"user_id": user.id, "today": today}).scalar()
+        db.commit()
+        return new_count or 1, 999999
+    except Exception as e:
+        logger.debug("Could not record daily usage metric: %s", e)
+        db.rollback()
+        return 1, 999999
 
 
 class ConcurrentRequestGuard:

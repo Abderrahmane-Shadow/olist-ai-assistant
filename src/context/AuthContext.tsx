@@ -73,6 +73,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const initAuth = async () => {
       try {
+        // 1. Check if arriving with an authorization code in URL query params
+        if (typeof window !== 'undefined') {
+          const urlParams = new URLSearchParams(window.location.search);
+          const code = urlParams.get('code');
+          if (code) {
+            try {
+              const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+              if (!error && data?.session) {
+                setSession(data.session);
+                setUser(data.session.user);
+                setToken(data.session.access_token);
+
+                // Clean the ?code= query param from the browser URL without reload
+                urlParams.delete('code');
+                const remainingQuery = urlParams.toString();
+                const cleanUrl =
+                  window.location.pathname +
+                  (remainingQuery ? `?${remainingQuery}` : '') +
+                  window.location.hash;
+                window.history.replaceState({}, document.title, cleanUrl);
+
+                if (data.session.access_token) {
+                  await fetchProfileAndUsage(data.session.access_token);
+                }
+                setIsLoading(false);
+                return;
+              }
+            } catch (exchangeErr) {
+              console.warn('Client-side code exchange exception:', exchangeErr);
+            }
+          }
+        }
+
+        // 2. Load existing session from cookies
         const { data: { session } } = await supabase.auth.getSession();
         setSession(session);
         setUser(session?.user ?? null);
@@ -113,8 +147,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) return { error: error.message };
+
+      if (data?.session) {
+        setSession(data.session);
+        setUser(data.session.user);
+        setToken(data.session.access_token);
+        if (data.session.access_token) {
+          await fetchProfileAndUsage(data.session.access_token);
+        }
+      }
       return {};
     } catch (err: any) {
       return { error: err.message || 'An unexpected error occurred during sign in.' };
@@ -123,16 +166,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signUp = async (email: string, password: string, displayName?: string) => {
     try {
-      const { error } = await supabase.auth.signUp({
+      const redirectUrl =
+        typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : undefined;
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
+          emailRedirectTo: redirectUrl,
           data: {
             display_name: displayName || email.split('@')[0],
           },
         },
       });
       if (error) return { error: error.message };
+
+      if (data?.session) {
+        setSession(data.session);
+        setUser(data.session.user);
+        setToken(data.session.access_token);
+        if (data.session.access_token) {
+          await fetchProfileAndUsage(data.session.access_token);
+        }
+      }
       return {};
     } catch (err: any) {
       return { error: err.message || 'An unexpected error occurred during sign up.' };
@@ -161,12 +216,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Error during signOut:', err);
+    }
     setUser(null);
     setSession(null);
     setToken(null);
     setProfile(null);
     setDailyUsage(null);
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
   };
 
   const resetPassword = async (email: string) => {
@@ -175,10 +237,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl,
       });
-      if (error) return { error: error.message };
+      if (error) {
+        const lower = error.message.toLowerCase();
+        if (lower.includes('rate limit') || lower.includes('rate_limit') || lower.includes('too many')) {
+          return {
+            error:
+              'For security reasons, password reset requests are temporarily rate-limited by Supabase. Please wait a few minutes before requesting another reset link.',
+          };
+        }
+        return { error: error.message };
+      }
       return {};
     } catch (err: any) {
-      return { error: err.message || 'Failed to send password reset email.' };
+      const msg = err?.message || '';
+      const lower = msg.toLowerCase();
+      if (lower.includes('rate limit') || lower.includes('rate_limit') || lower.includes('too many')) {
+        return {
+          error:
+            'For security reasons, password reset requests are temporarily rate-limited by Supabase. Please wait a few minutes before requesting another reset link.',
+        };
+      }
+      return { error: msg || 'Failed to send password reset email.' };
     }
   };
 

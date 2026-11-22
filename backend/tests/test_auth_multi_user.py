@@ -157,6 +157,7 @@ class TestAuthMultiUser(unittest.TestCase):
             "email": self.user_a_email,
             "exp": int(time.time()) + 3600,
             "aud": "authenticated",
+            "iss": f"{self.settings.SUPABASE_URL.rstrip('/')}/auth/v1" if self.settings.SUPABASE_URL else "supabase-demo",
         }
         rsa_token = jwt.encode(payload, private_pem, algorithm="RS256")
 
@@ -167,6 +168,77 @@ class TestAuthMultiUser(unittest.TestCase):
             verified = verify_supabase_jwt(rsa_token)
             self.assertEqual(verified["sub"], self.user_a_id)
         finally:
+            self.settings.SUPABASE_JWT_PUBLIC_KEY = old_pubkey
+
+    def test_03e2_asymmetric_es256_ecc_token_verification(self):
+        """Verify asymmetric ES256 (ECC P-256) token verification matching Supabase's current signing algorithm."""
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+
+        # Generate temporary test ECDSA P-256 keypair (matching Supabase ES256)
+        ec_private_key = ec.generate_private_key(ec.SECP256R1())
+        ec_private_pem = ec_private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        ec_public_pem = ec_private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+        # Encode token using ES256 and ECC private key with kid header
+        payload = {
+            "sub": self.user_a_id,
+            "email": self.user_a_email,
+            "exp": int(time.time()) + 3600,
+            "aud": "authenticated",
+            "iss": f"{self.settings.SUPABASE_URL.rstrip('/')}/auth/v1" if self.settings.SUPABASE_URL else "supabase-demo",
+        }
+        headers = {"kid": "supabase-test-key-2026", "alg": "ES256"}
+        es256_token = jwt.encode(payload, ec_private_pem, algorithm="ES256", headers=headers)
+
+        # Configure public key in settings and verify ES256
+        old_pubkey = self.settings.SUPABASE_JWT_PUBLIC_KEY
+        try:
+            self.settings.SUPABASE_JWT_PUBLIC_KEY = ec_public_pem
+            verified = verify_supabase_jwt(es256_token)
+            self.assertEqual(verified["sub"], self.user_a_id)
+            self.assertEqual(verified["email"], self.user_a_email)
+
+            # Test that HS256 tokens also remain completely valid under the same runtime
+            hs256_token = create_test_token(self.user_a_id, self.user_a_email)
+            hs256_verified = verify_supabase_jwt(hs256_token)
+            self.assertEqual(hs256_verified["sub"], self.user_a_id)
+        finally:
+            self.settings.SUPABASE_JWT_PUBLIC_KEY = old_pubkey
+
+    def test_03e3_jwks_kid_unknown_rejected(self):
+        """Verify that asymmetric tokens with unknown kid or unreachable JWKS are rejected with HTTP 401."""
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import serialization
+
+        ec_key = ec.generate_private_key(ec.SECP256R1())
+        ec_pem = ec_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        payload = {"sub": self.user_a_id, "email": self.user_a_email, "exp": int(time.time()) + 3600, "aud": "authenticated"}
+        token_unknown_kid = jwt.encode(payload, ec_pem, algorithm="ES256", headers={"kid": "non-existent-kid"})
+
+        old_url = self.settings.SUPABASE_URL
+        old_pubkey = self.settings.SUPABASE_JWT_PUBLIC_KEY
+        try:
+            self.settings.SUPABASE_JWT_PUBLIC_KEY = None
+            self.settings.SUPABASE_URL = "http://localhost:59999"  # unreachable endpoint
+            with self.assertRaises(HTTPException) as ctx:
+                verify_supabase_jwt(token_unknown_kid)
+            self.assertEqual(ctx.exception.status_code, 401)
+            self.assertIn("jwks", ctx.exception.detail.lower())
+        finally:
+            self.settings.SUPABASE_URL = old_url
             self.settings.SUPABASE_JWT_PUBLIC_KEY = old_pubkey
 
     def test_03f_invalid_audience_rejected(self):
@@ -223,9 +295,14 @@ class TestAuthMultiUser(unittest.TestCase):
 
     def test_04_missing_auth_header_rejected_by_api(self):
         """Verify that calling protected endpoint without Bearer token returns 401."""
-        res = self.client.get("/api/conversations")
-        self.assertEqual(res.status_code, 401)
-        self.assertIn("Bearer token in Authorization header is required", res.json()["detail"])
+        old_require_auth = self.settings.REQUIRE_AUTH
+        try:
+            self.settings.REQUIRE_AUTH = True
+            res = self.client.get("/api/conversations")
+            self.assertEqual(res.status_code, 401)
+            self.assertIn("Bearer token in Authorization header is required", res.json()["detail"])
+        finally:
+            self.settings.REQUIRE_AUTH = old_require_auth
 
     def test_04b_user_profile_isolation(self):
         """Verify that /api/auth/me returns only the authenticated user's profile and never another user's."""
@@ -319,41 +396,38 @@ class TestAuthMultiUser(unittest.TestCase):
     # -------------------------------------------------------------
     # 3. Quota & Rate Limiting Tests
     # -------------------------------------------------------------
-    def test_09_daily_question_limit_enforced(self):
-        """Verify that exceeding 15 daily questions raises HTTP 429."""
-        # Create a test user with a strict 3-question limit
+    def test_09_daily_question_limit_unlimited(self):
+        """Verify that daily question limit is unlimited and does not raise HTTP 429."""
         test_uid = str(uuid.uuid4())
         test_user = AuthenticatedUser(
             id=test_uid,
             email=f"quota_{test_uid[:6]}@test.local",
             role="user",
-            daily_question_limit=3,
+            daily_question_limit=999999,
         )
         today = date.today()
-        # Separate statements for psycopg prepared statements
         self.db.execute(
             text("INSERT INTO auth.users (id, email) VALUES (:id, :email) ON CONFLICT (id) DO NOTHING;"),
             {"id": test_uid, "email": test_user.email},
         )
         self.db.execute(
-            text("INSERT INTO public.profiles (id, email, role, daily_question_limit) VALUES (:id, :email, 'user', 3) ON CONFLICT (id) DO NOTHING;"),
+            text("INSERT INTO public.profiles (id, email, role, daily_question_limit) VALUES (:id, :email, 'user', 999999) ON CONFLICT (id) DO NOTHING;"),
             {"id": test_uid, "email": test_user.email},
         )
         self.db.execute(
             text("""
                 INSERT INTO public.user_daily_usage (user_id, usage_date, question_count)
-                VALUES (:id, :today, 3)
-                ON CONFLICT (user_id, usage_date) DO UPDATE SET question_count = 3;
+                VALUES (:id, :today, 100)
+                ON CONFLICT (user_id, usage_date) DO UPDATE SET question_count = 100;
             """),
             {"id": test_uid, "today": today},
         )
         self.db.commit()
 
-        # Next question must raise HTTP 429
-        with self.assertRaises(HTTPException) as ctx:
-            check_and_increment_daily_usage(test_user, self.db)
-        self.assertEqual(ctx.exception.status_code, 429)
-        self.assertIn("Daily question limit reached", ctx.exception.detail)
+        # Calling usage check must succeed and return unlimited quota
+        used, limit = check_and_increment_daily_usage(test_user, self.db)
+        self.assertGreaterEqual(used, 100)
+        self.assertEqual(limit, 999999)
 
         # Clean up
         self.db.execute(text("DELETE FROM public.profiles WHERE id = :id;"), {"id": test_uid})

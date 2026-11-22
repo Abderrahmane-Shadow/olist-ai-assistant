@@ -60,21 +60,19 @@ def get_user_me(
     row = db.execute(sql_check, {"user_id": user.id, "today": today}).first()
     used = row[0] if row else 0
 
-    if user.role == "admin":
-        remaining = 999999
-    else:
-        remaining = max(0, user.daily_question_limit - used)
+    remaining = 999999
+    unlimited_limit = 999999
 
     prof = UserProfile(
         id=user.id,
         email=user.email,
         display_name=user.display_name,
         role=user.role,
-        daily_question_limit=user.daily_question_limit,
+        daily_question_limit=unlimited_limit,
     )
     usage = DailyUsage(
         used=used,
-        limit=user.daily_question_limit,
+        limit=unlimited_limit,
         remaining=remaining,
     )
 

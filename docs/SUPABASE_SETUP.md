@@ -42,16 +42,16 @@ From your Supabase project dashboard:
 
 1. Go to **Project Settings** > **API**:
    - **Project URL:** `https://<project-ref>.supabase.co`
-     *(Set as `NEXT_PUBLIC_SUPABASE_URL` in frontend)*
-   - **Anon Key (public):** `ey...`
-     *(Set as `NEXT_PUBLIC_SUPABASE_ANON_KEY` in frontend)*
+     *(Set as `NEXT_PUBLIC_SUPABASE_URL` in frontend, and `SUPABASE_URL` in backend)*
+   - **Publishable Key (or Anon Key):** `sb_publishable_...` or `ey...`
+     *(Set as `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in frontend)*
 2. Go to **Project Settings** > **API** > **JWT Settings**:
    - **JWT Secret:** Copy the secret string.
      *(Set as `SUPABASE_JWT_SECRET` in backend)*
 3. Go to **Project Settings** > **Database** > **Connection string**:
    - Copy the **URI** connection string:
-     `postgresql://postgres:[YOUR-PASSWORD]@db.<project-ref>.supabase.co:5432/postgres`
-     *(Set as `DATABASE_URL` in backend)*
+     `postgresql://postgres:[YOUR-PASSWORD]@aws-0-[region].pooler.supabase.com:5432/postgres` (Pooler - Session Mode)
+     *(Set as `DATABASE_URL` in backend; auto-normalized to `postgresql+psycopg://`)*
 
 ---
 
@@ -90,14 +90,23 @@ psql -h db.<project-ref>.supabase.co -U postgres -d postgres -p 5432 -f olist_du
 In Supabase **SQL Editor**, run:
 
 ```sql
--- Create read-only user for analytical Text-to-SQL execution
+-- 1. Create dedicated read-only role for safe Text-to-SQL analytics
 CREATE USER olist_readonly WITH PASSWORD 'SecurePasswordHere123!';
 GRANT CONNECT ON DATABASE postgres TO olist_readonly;
 GRANT USAGE ON SCHEMA public TO olist_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO olist_readonly;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO olist_readonly;
 
--- STRICT ISOLATION: Revoke access to authentication and conversation tables
+-- 2. Explicitly grant SELECT ONLY on the 9 approved Olist analytics tables
+GRANT SELECT ON TABLE public.customers TO olist_readonly;
+GRANT SELECT ON TABLE public.geolocation TO olist_readonly;
+GRANT SELECT ON TABLE public.orders TO olist_readonly;
+GRANT SELECT ON TABLE public.order_items TO olist_readonly;
+GRANT SELECT ON TABLE public.order_payments TO olist_readonly;
+GRANT SELECT ON TABLE public.order_reviews TO olist_readonly;
+GRANT SELECT ON TABLE public.products TO olist_readonly;
+GRANT SELECT ON TABLE public.sellers TO olist_readonly;
+GRANT SELECT ON TABLE public.product_category_name_translation TO olist_readonly;
+
+-- 3. STRICT PRIVILEGE ISOLATION: Explicitly revoke access to user and conversation tables
 REVOKE ALL ON TABLE public.profiles FROM olist_readonly;
 REVOKE ALL ON TABLE public.conversations FROM olist_readonly;
 REVOKE ALL ON TABLE public.messages FROM olist_readonly;
