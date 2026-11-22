@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { createClient } from '@/lib/supabase/client';
+import { getApiBaseUrl } from '@/lib/api';
 
 export interface UserProfile {
   id: string;
@@ -48,7 +49,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchProfileAndUsage = useCallback(async (accessToken: string) => {
     try {
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const apiBase = getApiBaseUrl();
       const res = await fetch(`${apiBase}/api/auth/me`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,

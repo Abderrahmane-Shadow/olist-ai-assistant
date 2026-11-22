@@ -12,8 +12,9 @@ app = FastAPI(
     title="Olist AI Assistant API",
     description="Backend API service for Olist E-Commerce Analytics Assistant",
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
 # Configure CORS Middleware
@@ -32,18 +33,20 @@ app.include_router(conversations_router)
 
 
 @app.get("/", tags=["Root"])
+@app.get("/api", tags=["Root"])
 def read_root():
     """Root endpoint welcoming clients and directing to API documentation."""
     return {
         "service": "Olist AI Assistant Backend",
         "status": "online",
-        "docs_url": "/docs",
+        "docs_url": "/api/docs",
         "environment": settings.APP_ENV,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
 @app.get("/health", tags=["Health"])
+@app.get("/api/health", tags=["Health"])
 def health_check():
     """Health check endpoint reporting API and database connectivity status."""
     db_status = check_database_connection()

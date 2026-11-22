@@ -13,10 +13,11 @@ import { SettingsModal } from '@/components/SettingsModal';
 import { Conversation, Message, MetricCard, ChartConfig, ReviewCitation, SentimentSummary } from '@/types/chat';
 import { getMockResponse } from '@/data/mockResponses';
 import { useAuth } from '@/context/AuthContext';
+import { getApiBaseUrl } from '@/lib/api';
 
 const STORAGE_KEY = 'olist_ai_conversations_v1';
 const ACTIVE_CONV_KEY = 'olist_ai_active_id_v1';
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE_URL = getApiBaseUrl();
 
 interface BackendChatResponse {
   text: string;
