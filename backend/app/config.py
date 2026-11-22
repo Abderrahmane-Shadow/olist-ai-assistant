@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Direct database URL overrides (optional, auto-normalized to postgresql+psycopg://)
     DATABASE_URL: str | None = None
     DATABASE_RO_URL: str | None = None
+    POSTGRES_URL: str | None = None
+    POSTGRES_URL_NON_POOLING: str | None = None
+    POSTGRES_PRISMA_URL: str | None = None
 
     # Google Gemini API configuration
     GEMINI_API_KEY: str | None = None
@@ -67,51 +70,75 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
         return ["http://localhost:3000"]
 
+    def _normalize_pg_url(self, raw_url: str) -> str:
+        """Normalize PostgreSQL connection string to postgresql+psycopg:// with safe SSL handling."""
+        url = raw_url.strip()
+        if url.startswith("postgres://"):
+            url = "postgresql+psycopg://" + url[len("postgres://"):]
+        elif url.startswith("postgresql://"):
+            url = "postgresql+psycopg://" + url[len("postgresql://"):]
+
+        # Safely encode literal '@' or special characters in password if unencoded
+        if url.count("@") > 1:
+            prefix, rest = url.split("://", 1)
+            auth_part, host_part = rest.rsplit("@", 1)
+            if ":" in auth_part:
+                user_part, pw_part = auth_part.split(":", 1)
+                from urllib.parse import quote_plus, unquote
+                encoded_pw = quote_plus(unquote(pw_part))
+                url = f"{prefix}://{user_part}:{encoded_pw}@{host_part}"
+
+        # Ensure sslmode=require for remote cloud databases if not already present
+        host_segment = url.split("@", 1)[-1] if "@" in url else url
+        is_local = any(loc in host_segment.lower() for loc in ("localhost", "127.0.0.1", ":5432/olist_db"))
+        if not is_local and "sslmode=" not in url:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}sslmode=require"
+
+        return url
+
     @computed_field
     @property
     def sqlalchemy_database_url(self) -> str:
         """Construct PostgreSQL SQLAlchemy database URL using psycopg driver."""
-        url = self.DATABASE_URL
-        if url:
-            if url.startswith("postgres://"):
-                url = "postgresql+psycopg://" + url[len("postgres://"):]
-            elif url.startswith("postgresql://"):
-                url = "postgresql+psycopg://" + url[len("postgresql://"):]
-            # Safely encode literal '@' or special characters in password if unencoded
-            if url.count("@") > 1:
-                prefix, rest = url.split("://", 1)
-                auth_part, host_part = rest.rsplit("@", 1)
-                if ":" in auth_part:
-                    user_part, pw_part = auth_part.split(":", 1)
-                    from urllib.parse import quote_plus, unquote
-                    encoded_pw = quote_plus(unquote(pw_part))
-                    url = f"{prefix}://{user_part}:{encoded_pw}@{host_part}"
-            return url
-        return (
+        raw_url = (
+            self.DATABASE_URL
+            or self.POSTGRES_URL
+            or self.POSTGRES_URL_NON_POOLING
+            or self.POSTGRES_PRISMA_URL
+        )
+        if raw_url and raw_url.strip():
+            return self._normalize_pg_url(raw_url)
+
+        base_url = (
             f"postgresql+psycopg://{self.DB_USER}:{self.DB_PASSWORD}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         )
+        if self.DB_HOST not in ("localhost", "127.0.0.1", "db"):
+            base_url += "?sslmode=require"
+        return base_url
 
     @computed_field
     @property
     def readonly_database_url(self) -> str:
         """Construct read-only database URL for safe dynamic SQL execution."""
-        url = self.DATABASE_RO_URL
-        if url:
-            if url.startswith("postgres://"):
-                url = "postgresql+psycopg://" + url[len("postgres://"):]
-            elif url.startswith("postgresql://"):
-                url = "postgresql+psycopg://" + url[len("postgresql://"):]
-            # Safely encode literal '@' or special characters in password if unencoded
-            if url.count("@") > 1:
-                prefix, rest = url.split("://", 1)
-                auth_part, host_part = rest.rsplit("@", 1)
-                if ":" in auth_part:
-                    user_part, pw_part = auth_part.split(":", 1)
-                    from urllib.parse import quote_plus, unquote
-                    encoded_pw = quote_plus(unquote(pw_part))
-                    url = f"{prefix}://{user_part}:{encoded_pw}@{host_part}"
-            return url
+        raw_url = self.DATABASE_RO_URL
+        if raw_url and raw_url.strip():
+            return self._normalize_pg_url(raw_url)
+
+        # In production serverless/cloud environments where a separate read-only
+        # URL is not configured, fall back to the primary database URL.
+        # Dynamic SQL safely enforces read-only mode via AST validation and session settings.
+        primary_url = (
+            self.DATABASE_URL
+            or self.POSTGRES_URL
+            or self.POSTGRES_URL_NON_POOLING
+            or self.POSTGRES_PRISMA_URL
+        )
+        if primary_url and primary_url.strip():
+            return self.sqlalchemy_database_url
+
+        # Fallback to local read-only credentials for local development
         return (
             f"postgresql+psycopg://{self.DB_READONLY_USER}:{self.DB_READONLY_PASSWORD}@"
             f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"

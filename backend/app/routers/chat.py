@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError, OperationalError, DatabaseError
 from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.auth import (
@@ -86,76 +87,78 @@ def process_chat_message(
     user_query = request.message.strip()
     settings = get_settings()
 
-    # Fallback to test/anonymous user for direct unit test invocations
-    if user is None or not isinstance(user, AuthenticatedUser):
-        user = get_or_create_profile(
-            user_id="00000000-0000-0000-0000-000000000001",
-            email="developer@olist-assistant.internal",
-            display_name="Developer",
-            role="admin",
+    guard = None
+    try:
+        # Fallback to test/anonymous user for direct unit test invocations
+        if user is None or not isinstance(user, AuthenticatedUser):
+            user = get_or_create_profile(
+                user_id="00000000-0000-0000-0000-000000000001",
+                email="developer@olist-assistant.internal",
+                display_name="Developer",
+                role="admin",
+                db=db,
+            )
+
+        # 1. Enforce Daily Question Quota
+        daily_used, daily_limit = check_and_increment_daily_usage(user, db)
+
+        # 2. Manage Persistent Conversation
+        conv_id = request.conversation_id
+        if conv_id:
+            try:
+                uuid.UUID(str(conv_id))
+            except (ValueError, TypeError, AttributeError):
+                conv_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(conv_id)))
+                request.conversation_id = conv_id
+
+        if not conv_id:
+            title_snippet = user_query[:50] + ("..." if len(user_query) > 50 else "")
+            new_conv = ConversationService.create_conversation(user_id=user.id, title=title_snippet, db=db)
+            conv_id = new_conv["id"]
+            request.conversation_id = conv_id
+        else:
+            # Check if conversation exists; if not, auto-create it with this ID
+            sql_exists = text("SELECT user_id FROM public.conversations WHERE id = :id;")
+            existing = db.execute(sql_exists, {"id": conv_id}).mappings().first()
+            if not existing:
+                title_snippet = user_query[:50] + ("..." if len(user_query) > 50 else "")
+                db.execute(
+                    text("INSERT INTO public.conversations (id, user_id, title) VALUES (:id, :user_id, :title);"),
+                    {"id": conv_id, "user_id": user.id, "title": title_snippet},
+                )
+                db.commit()
+            elif str(existing["user_id"]) != str(user.id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied. You do not own this conversation.",
+                )
+
+        # Save User message to persistent history
+        ConversationService.save_message(
+            conversation_id=conv_id,
+            user_id=user.id,
+            role="user",
+            content=user_query,
+            metadata=None,
             db=db,
         )
 
-    # 1. Enforce Daily Question Quota
-    daily_used, daily_limit = check_and_increment_daily_usage(user, db)
+        # Cap history for safety/token limits (last 6 items)
+        safe_history = request.history[-6:] if request.history else []
 
-    # 2. Manage Persistent Conversation
-    conv_id = request.conversation_id
-    if conv_id:
-        try:
-            uuid.UUID(str(conv_id))
-        except (ValueError, TypeError, AttributeError):
-            conv_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(conv_id)))
-            request.conversation_id = conv_id
+        logger.info(
+            "[%s] [REQUEST RECEIVED] User: %s | Query: '%s' | ConvID: %s | History: %d items",
+            iso_start,
+            user.email,
+            user_query,
+            conv_id,
+            len(safe_history),
+        )
 
-    if not conv_id:
-        title_snippet = user_query[:50] + ("..." if len(user_query) > 50 else "")
-        new_conv = ConversationService.create_conversation(user_id=user.id, title=title_snippet, db=db)
-        conv_id = new_conv["id"]
-        request.conversation_id = conv_id
-    else:
-        # Check if conversation exists; if not, auto-create it with this ID
-        sql_exists = text("SELECT user_id FROM public.conversations WHERE id = :id;")
-        existing = db.execute(sql_exists, {"id": conv_id}).mappings().first()
-        if not existing:
-            title_snippet = user_query[:50] + ("..." if len(user_query) > 50 else "")
-            db.execute(
-                text("INSERT INTO public.conversations (id, user_id, title) VALUES (:id, :user_id, :title);"),
-                {"id": conv_id, "user_id": user.id, "title": title_snippet},
-            )
-            db.commit()
-        elif str(existing["user_id"]) != str(user.id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied. You do not own this conversation.",
-            )
+        # 3. Guard against excessive concurrent AI requests per user
+        guard = ConcurrentRequestGuard(user.id, max_concurrent=settings.MAX_CONCURRENT_REQUESTS_PER_USER)
+        guard.__enter__()
 
-    # Save User message to persistent history
-    ConversationService.save_message(
-        conversation_id=conv_id,
-        user_id=user.id,
-        role="user",
-        content=user_query,
-        metadata=None,
-        db=db,
-    )
-
-    # Cap history for safety/token limits (last 6 items)
-    safe_history = request.history[-6:] if request.history else []
-
-    logger.info(
-        "[%s] [REQUEST RECEIVED] User: %s | Query: '%s' | ConvID: %s | History: %d items",
-        iso_start,
-        user.email,
-        user_query,
-        conv_id,
-        len(safe_history),
-    )
-
-    # 3. Guard against excessive concurrent AI requests per user
-    guard = ConcurrentRequestGuard(user.id, max_concurrent=settings.MAX_CONCURRENT_REQUESTS_PER_USER)
-    guard.__enter__()
-    try:
         schema_service = get_schema_service(db)
         text_to_sql_service = get_text_to_sql_service(db)
         analytics_service = get_analytics_service(db)
@@ -348,6 +351,34 @@ def process_chat_message(
 
     except HTTPException:
         raise
+    except (OperationalError, DatabaseError) as db_exc:
+        total_elapsed_ms = (time.perf_counter() - request_start) * 1000
+        logger.error(
+            "[%s] [DATABASE ERROR] Database connection or query failed during chat query '%s' after %.2f ms: %s",
+            datetime.now(timezone.utc).isoformat(),
+            user_query,
+            total_elapsed_ms,
+            db_exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The analytical database is currently unreachable. Please verify database connectivity.",
+        )
+    except SQLAlchemyError as sql_exc:
+        total_elapsed_ms = (time.perf_counter() - request_start) * 1000
+        logger.error(
+            "[%s] [SQLALCHEMY ERROR] Database query error during chat query '%s' after %.2f ms: %s",
+            datetime.now(timezone.utc).isoformat(),
+            user_query,
+            total_elapsed_ms,
+            sql_exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred while processing the analytics query.",
+        )
     except Exception as exc:
         total_elapsed_ms = (time.perf_counter() - request_start) * 1000
         logger.error(
@@ -363,4 +394,5 @@ def process_chat_message(
             detail="An error occurred while processing the analytics query. Please try again.",
         )
     finally:
-        guard.__exit__(None, None, None)
+        if guard:
+            guard.__exit__(None, None, None)

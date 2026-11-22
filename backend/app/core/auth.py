@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError, OperationalError, DatabaseError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -209,69 +210,90 @@ def verify_supabase_jwt(token: str) -> dict:
 
 def get_or_create_profile(user_id: str, email: str, display_name: Optional[str], role: str, db: Session) -> AuthenticatedUser:
     """Ensure user profile exists in database and fetch role & quota limit."""
-    sql_select = text("SELECT id, email, display_name, role, daily_question_limit FROM public.profiles WHERE id = :id")
-    row = db.execute(sql_select, {"id": user_id}).mappings().first()
+    settings = get_settings()
+    clean_display = display_name or email.split("@")[0]
+    safe_role = role if role in ("user", "admin") else "user"
 
-    if row:
-        if role and row["role"] != role:
-            db.execute(text("UPDATE public.profiles SET role = :role WHERE id = :id"), {"role": role, "id": user_id})
-            db.commit()
+    try:
+        sql_select = text("SELECT id, email, display_name, role, daily_question_limit FROM public.profiles WHERE id = :id")
+        row = db.execute(sql_select, {"id": user_id}).mappings().first()
+
+        if row:
+            if role and row["role"] != role:
+                db.execute(text("UPDATE public.profiles SET role = :role WHERE id = :id"), {"role": role, "id": user_id})
+                db.commit()
+                return AuthenticatedUser(
+                    id=str(row["id"]),
+                    email=row["email"],
+                    display_name=row["display_name"],
+                    role=role,
+                    daily_question_limit=int(row["daily_question_limit"]),
+                )
             return AuthenticatedUser(
                 id=str(row["id"]),
                 email=row["email"],
                 display_name=row["display_name"],
-                role=role,
+                role=row["role"],
                 daily_question_limit=int(row["daily_question_limit"]),
             )
-        return AuthenticatedUser(
-            id=str(row["id"]),
-            email=row["email"],
-            display_name=row["display_name"],
-            role=row["role"],
-            daily_question_limit=int(row["daily_question_limit"]),
-        )
 
-    # Ensure user exists in auth.users if auth schema is present
-    try:
-        db.execute(
-            text("INSERT INTO auth.users (id, email) VALUES (:id, :email) ON CONFLICT (id) DO NOTHING;"),
-            {"id": user_id, "email": email},
-        )
-    except Exception as auth_err:
-        logger.debug("Could not insert into auth.users (may be on hosted Supabase without direct auth writes): %s", auth_err)
+        # Ensure user exists in auth.users if auth schema is present
+        try:
+            db.execute(
+                text("INSERT INTO auth.users (id, email) VALUES (:id, :email) ON CONFLICT (id) DO NOTHING;"),
+                {"id": user_id, "email": email},
+            )
+        except Exception as auth_err:
+            logger.debug("Could not insert into auth.users (hosted Supabase without direct auth writes): %s", auth_err)
 
-    # Insert new profile
-    clean_display = display_name or email.split("@")[0]
-    sql_insert = text("""
-        INSERT INTO public.profiles (id, email, display_name, role, daily_question_limit)
-        VALUES (:id, :email, :display_name, :role, :daily_limit)
-        ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
-        RETURNING id, email, display_name, role, daily_question_limit
-    """)
-    settings = get_settings()
-    inserted = db.execute(sql_insert, {
-        "id": user_id,
-        "email": email,
-        "display_name": clean_display,
-        "role": role if role in ("user", "admin") else "user",
-        "daily_limit": settings.MAX_DAILY_QUESTIONS_PER_USER,
-    }).mappings().first()
-    db.commit()
+        # Insert new profile
+        sql_insert = text("""
+            INSERT INTO public.profiles (id, email, display_name, role, daily_question_limit)
+            VALUES (:id, :email, :display_name, :role, :daily_limit)
+            ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email
+            RETURNING id, email, display_name, role, daily_question_limit
+        """)
+        inserted = db.execute(sql_insert, {
+            "id": user_id,
+            "email": email,
+            "display_name": clean_display,
+            "role": safe_role,
+            "daily_limit": settings.MAX_DAILY_QUESTIONS_PER_USER,
+        }).mappings().first()
+        db.commit()
 
+        if inserted:
+            return AuthenticatedUser(
+                id=str(inserted["id"]),
+                email=inserted["email"],
+                display_name=inserted["display_name"],
+                role=inserted["role"],
+                daily_question_limit=int(inserted["daily_question_limit"]),
+            )
+    except (OperationalError, DatabaseError, SQLAlchemyError) as db_err:
+        logger.warning("Database unavailable in get_or_create_profile: %s", db_err)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    # Safe degraded fallback if DB is unreachable so auth dependency does not crash ASGI
     return AuthenticatedUser(
-        id=str(inserted["id"]),
-        email=inserted["email"],
-        display_name=inserted["display_name"],
-        role=inserted["role"],
-        daily_question_limit=int(inserted["daily_question_limit"]),
+        id=user_id,
+        email=email,
+        display_name=clean_display,
+        role=safe_role,
+        daily_question_limit=settings.MAX_DAILY_QUESTIONS_PER_USER,
     )
 
 
-async def get_current_user(
+def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db),
 ) -> AuthenticatedUser:
-    """FastAPI dependency: extract and authenticate the current user from Bearer JWT."""
+    """FastAPI dependency: extract and authenticate the current user from Bearer JWT.
+    Synchronous definition ensures SQLAlchemy sessions run safely in threadpool.
+    """
     settings = get_settings()
 
     if not credentials or not credentials.credentials:

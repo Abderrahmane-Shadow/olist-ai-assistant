@@ -187,7 +187,7 @@ class ConversationService:
             VALUES (:conv_id, :role, :content, :metadata)
             RETURNING id, conversation_id, role, content, metadata, created_at;
         """)
-        meta_json = json.dumps(metadata) if metadata else None
+        meta_json = json.dumps(metadata, default=str) if metadata else None
         msg_row = db.execute(sql_insert, {
             "conv_id": conversation_id,
             "role": role,

@@ -55,10 +55,14 @@ def get_user_me(
     db: Session = Depends(get_db),
 ):
     """Return the authenticated user's profile and remaining question quota."""
-    today = date.today()
-    sql_check = text("SELECT question_count FROM public.user_daily_usage WHERE user_id = :user_id AND usage_date = :today")
-    row = db.execute(sql_check, {"user_id": user.id, "today": today}).first()
-    used = row[0] if row else 0
+    used = 0
+    try:
+        today = date.today()
+        sql_check = text("SELECT question_count FROM public.user_daily_usage WHERE user_id = :user_id AND usage_date = :today")
+        row = db.execute(sql_check, {"user_id": user.id, "today": today}).first()
+        used = row[0] if row else 0
+    except Exception as exc:
+        logger.warning("Could not read daily usage from DB, defaulting to 0: %s", exc)
 
     remaining = 999999
     unlimited_limit = 999999

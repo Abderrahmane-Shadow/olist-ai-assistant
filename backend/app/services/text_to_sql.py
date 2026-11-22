@@ -537,12 +537,23 @@ class TextToSQLService:
         )
         try:
             with readonly_engine.connect() as conn:
-                # Execute in read-only transaction with 5s statement timeout
+                # Enforce statement timeout and read-only transaction safely per connection
                 conn.execute(text("SET statement_timeout = 5000;"))
+                conn.execute(text("SET default_transaction_read_only = on;"))
                 result = conn.execute(text(safe_sql))
                 columns = list(result.keys())
                 raw_rows = result.fetchall()
-                rows = [dict(zip(columns, row)) for row in raw_rows]
+
+                def _safe_val(v):
+                    from decimal import Decimal
+                    import datetime
+                    if isinstance(v, Decimal):
+                        return float(v)
+                    elif isinstance(v, (datetime.datetime, datetime.date)):
+                        return v.isoformat()
+                    return v
+
+                rows = [{col: _safe_val(val) for col, val in zip(columns, row)} for row in raw_rows]
 
                 elapsed_ms = (time.perf_counter() - start_stage) * 1000
                 logger.info(

@@ -11,7 +11,6 @@ import { ChatInput } from '@/components/ChatInput';
 import { LoadingIndicator } from '@/components/LoadingIndicator';
 import { SettingsModal } from '@/components/SettingsModal';
 import { Conversation, Message, MetricCard, ChartConfig, ReviewCitation, SentimentSummary } from '@/types/chat';
-import { getMockResponse } from '@/data/mockResponses';
 import { useAuth } from '@/context/AuthContext';
 import { getApiBaseUrl } from '@/lib/api';
 
@@ -336,23 +335,36 @@ export default function Home() {
           metadata: data.metadata,
         };
       }
+
+      // Handle non-200 responses cleanly without presenting fabricated answers
+      let errorMsg = 'The analytics service or database is currently unavailable.';
+      try {
+        const errData = await res.json();
+        if (errData && errData.detail) {
+          errorMsg = errData.detail;
+        }
+      } catch {
+        // Fall back to default error text if body is not JSON
+      }
+
+      return {
+        id: 'msg-' + Date.now(),
+        sender: 'assistant',
+        text: `⚠️ **Service Error (${res.status})**: ${errorMsg}\n\nPlease check the database connection and deployment status.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
     } catch (err: any) {
       if (err.name === 'AbortError') {
         throw err;
       }
-      console.warn('Backend API unavailable or error, falling back to mock response:', err);
+      console.error('Backend API communication error:', err);
+      return {
+        id: 'msg-' + Date.now(),
+        sender: 'assistant',
+        text: `⚠️ **Connection Error**: Unable to reach the backend API (${err.message || 'Network error'}).\n\nPlease verify that the backend service is running and properly routed.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
     }
-
-    // Fall back to mock response only if backend is completely offline
-    const mockResult = getMockResponse(promptText);
-    return {
-      id: 'msg-' + Date.now(),
-      sender: 'assistant',
-      text: mockResult.text,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      metrics: mockResult.metrics,
-      breakdown: mockResult.breakdown,
-    };
   };
 
   // Handler: Send Message
