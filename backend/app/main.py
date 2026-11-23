@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError, OperationalError, DatabaseError
@@ -92,13 +92,15 @@ def read_root():
 
 @app.get("/health", tags=["Health"])
 @app.get("/api/health", tags=["Health"])
-def health_check():
+def health_check(response: Response):
     """Health check endpoint reporting API and database connectivity status."""
     db_status = check_database_connection()
     is_healthy = db_status.get("connected", False)
+    if not is_healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
     return {
-        "status": "healthy" if is_healthy else "degraded",
+        "status": "healthy" if is_healthy else "unhealthy",
         "service": "olist-ai-assistant-api",
         "environment": settings.APP_ENV,
         "version": "0.1.0",

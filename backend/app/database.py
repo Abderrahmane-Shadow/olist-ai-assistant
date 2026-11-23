@@ -87,14 +87,18 @@ def get_readonly_db() -> Generator[Session, None, None]:
 
 def check_database_connection() -> dict:
     """Safely check PostgreSQL connectivity without raising unhandled exceptions or leaking secrets."""
+    db_host = engine.url.host or settings.effective_db_host
+    db_port = engine.url.port or settings.effective_db_port
+    db_name = engine.url.database or settings.effective_db_name
+    host_display = f"{db_host}:{db_port}" if db_port else str(db_host)
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
         return {
             "connected": True,
             "message": "Successfully connected to PostgreSQL database.",
-            "database": settings.DB_NAME,
-            "host": f"{settings.DB_HOST}:{settings.DB_PORT}",
+            "database": db_name,
+            "host": host_display,
         }
     except Exception as exc:
         err_msg = str(exc)
@@ -104,8 +108,8 @@ def check_database_connection() -> dict:
         return {
             "connected": False,
             "message": f"PostgreSQL database not reachable: {err_msg}",
-            "database": settings.DB_NAME,
-            "host": f"{settings.DB_HOST}:{settings.DB_PORT}",
+            "database": db_name,
+            "host": host_display,
         }
 
 
