@@ -74,9 +74,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const initAuth = async () => {
       try {
-        // 1. Check if arriving with an authorization code in URL query params
+        // 1. Check if arriving with an authorization code or recovery tokens in URL
         if (typeof window !== 'undefined') {
           const urlParams = new URLSearchParams(window.location.search);
+          const hash = window.location.hash;
+          const isRecovery =
+            urlParams.get('type') === 'recovery' ||
+            hash.includes('type=recovery') ||
+            window.location.pathname === '/reset-password';
+
           const code = urlParams.get('code');
           if (code) {
             try {
@@ -95,6 +101,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   window.location.hash;
                 window.history.replaceState({}, document.title, cleanUrl);
 
+                if (isRecovery && window.location.pathname !== '/reset-password') {
+                  window.location.href = '/reset-password';
+                  return;
+                }
+
                 if (data.session.access_token) {
                   await fetchProfileAndUsage(data.session.access_token);
                 }
@@ -103,6 +114,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             } catch (exchangeErr) {
               console.warn('Client-side code exchange exception:', exchangeErr);
+            }
+          } else if (isRecovery && (hash.includes('access_token') || hash.includes('type=recovery'))) {
+            if (window.location.pathname !== '/reset-password') {
+              window.location.href = `/reset-password${window.location.search}${window.location.hash}`;
+              return;
             }
           }
         }
@@ -126,7 +142,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     initAuth();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        if (typeof window !== 'undefined' && window.location.pathname !== '/reset-password') {
+          window.location.href = '/reset-password';
+          return;
+        }
+      }
       setSession(newSession);
       setUser(newSession?.user ?? null);
       const accessToken = newSession?.access_token ?? null;
@@ -262,7 +284,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPassword = async (email: string) => {
     try {
-      const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined;
+      const redirectUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/auth/callback?next=/reset-password`
+          : undefined;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl,
       });

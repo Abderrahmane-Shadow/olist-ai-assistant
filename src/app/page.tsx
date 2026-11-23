@@ -77,6 +77,18 @@ export default function Home() {
   // Route protection: redirect unauthenticated users to /login immediately
   useEffect(() => {
     if (!isAuthLoading && !user) {
+      if (typeof window !== 'undefined') {
+        const hash = window.location.hash;
+        const search = window.location.search;
+        // If recovery token or code arrives on the root URL, redirect to /reset-password instead of /login
+        if (hash.includes('type=recovery') || search.includes('type=recovery')) {
+          router.replace(`/reset-password${search}${hash}`);
+          return;
+        }
+        if (search.includes('code=')) {
+          return;
+        }
+      }
       router.replace('/login');
     }
   }, [user, isAuthLoading, router]);

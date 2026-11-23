@@ -5,12 +5,30 @@ import { cookies } from 'next/headers';
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get('code');
-  const next = requestUrl.searchParams.get('next') ?? '/';
+  const type = requestUrl.searchParams.get('type');
+  const errorParam = requestUrl.searchParams.get('error');
+  const errorDesc = requestUrl.searchParams.get('error_description');
+  let next = requestUrl.searchParams.get('next') ?? '/';
   const forwardedHost = request.headers.get('x-forwarded-host');
   const isLocalEnv = process.env.NODE_ENV === 'development';
   let origin = requestUrl.origin;
   if (!isLocalEnv && forwardedHost) {
     origin = `https://${forwardedHost}`;
+  }
+
+  const isRecovery = type === 'recovery' || next.includes('reset-password');
+
+  // Handle provider error passed in query parameters (e.g. expired link)
+  if (errorParam || errorDesc) {
+    const errorMsg = errorDesc || errorParam || 'Authentication link is invalid or has expired.';
+    if (isRecovery) {
+      return NextResponse.redirect(`${origin}/reset-password?error=${encodeURIComponent(errorMsg)}`);
+    }
+    return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(errorMsg)}`);
+  }
+
+  if (isRecovery && next === '/') {
+    next = '/reset-password';
   }
 
   if (code) {
@@ -42,8 +60,18 @@ export async function GET(request: Request) {
       return response;
     }
     console.error('Supabase exchangeCodeForSession failed in callback:', error.message);
+
+    if (isRecovery) {
+      return NextResponse.redirect(
+        `${origin}/reset-password?error=${encodeURIComponent(
+          error.message || 'Could not verify recovery link. It may have expired or already been used.'
+        )}`
+      );
+    }
   }
 
   // Return the user to login with informative error message
-  return NextResponse.redirect(`${origin}/login?error=Could%20not%20verify%20authentication%20code.%20Please%20try%20signing%20in%20directly.`);
+  return NextResponse.redirect(
+    `${origin}/login?error=Could%20not%20verify%20authentication%20code.%20Please%20try%20signing%20in%20directly.`
+  );
 }

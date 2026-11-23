@@ -342,21 +342,21 @@ class TextToSQLService:
             "- Ambiguous follow-ups:\n"
             "  * If a follow-up is too vague, elliptical, or ambiguous to understand what metric is requested (e.g. 'And then?', 'More?', 'What else?'), return:\n"
             "    {\"type\": \"clarification\", \"message\": \"<Polite clarification in the user's language asking which metric or dimension they want>\"}.\n\n"
-            "GENERAL INSTRUCTIONS:\n"
-            "1. If the user asks an analytical or data question about Olist (orders, products, product prices, item prices, revenue, customers, sellers, freight, reviews, payments, dates, correlations, distributions, state comparisons, delay vs reviews, pricing by category):\n"
-            "   - Generate a single read-only PostgreSQL SELECT query utilizing the canonical formulas and join keys defined in the semantic layer above.\n"
-            "   - Important: Product prices are stored in order_items.price (the products table does NOT contain a price column). For average product price, calculate AVG(order_items.price).\n"
-            "   - When calculating average product price by category, join order_items to products on order_items.product_id = products.product_id and left join product_category_name_translation.\n"
-            "   - Return JSON with {\"type\": \"sql\", \"sql\": \"<SELECT query>\"}.\n"
-            "   - Always alias calculated columns clearly (e.g. total_revenue, avg_order_value, order_count, late_pct, avg_delay_days, avg_rating).\n"
-            "   - Always include a reasonable LIMIT (e.g. LIMIT 10 or LIMIT 20 for rankings/breakdowns; omit or LIMIT 1 for single scalars).\n"
-            "   - Use proper JOIN keys as defined in the semantic join relationships.\n"
-            "   - Only query the approved public tables. Never use DDL or DML.\n"
-            "2. If the user question is analytical but heavily ambiguous or missing required parameters (e.g. 'compare revenue' without specifying by what dimension, or 'show me orders' without any criteria):\n"
-            "   - Return JSON with {\"type\": \"clarification\", \"message\": \"<Polite clarification question suggesting options>\"}.\n"
-            "3. If the query is completely outside the domain of Olist e-commerce analytics:\n"
-            "   - Return JSON with {\"type\": \"unsupported\", \"message\": \"<Polite explanation of what Olist analytics capabilities are supported>\"}.\n"
-            "4. Historical Time Intelligence: The Olist database is historical (September 2016 to October 2018). NEVER use NOW() or CURRENT_DATE for relative analytical periods (e.g., 'last 6 months', 'last 12 months', 'previous month', 'recent trends'). Always anchor relative date filters using (SELECT MAX(order_purchase_timestamp) FROM orders), e.g.: WHERE orders.order_purchase_timestamp >= (SELECT MAX(order_purchase_timestamp) FROM orders) - INTERVAL '6 months'.\n\n"
+            "OPEN-ENDED ANALYTICAL GUIDELINES ACROSS ALL 9 OLIST TABLES:\n"
+            "1. REVENUE & PRICING: Merchandise revenue is SUM(order_items.price). Total freight is SUM(order_items.freight_value). Note: Product prices are located in order_items.price (the products table has NO price column). For min/max prices: MIN(order_items.price), MAX(order_items.price).\n"
+            "2. ORDERS & LOGISTICS: For order counts, use COUNT(DISTINCT orders.order_id). Delivery duration in days: EXTRACT(epoch FROM (orders.order_delivered_customer_date - orders.order_purchase_timestamp))/86400.0. Late deliveries: orders.order_delivered_customer_date > orders.order_estimated_delivery_date. Early deliveries: orders.order_delivered_customer_date < orders.order_estimated_delivery_date. Cancellations: orders.order_status = 'canceled'. Date boundaries: MIN(orders.order_purchase_timestamp), MAX(orders.order_purchase_timestamp).\n"
+            "3. CUSTOMERS & RETENTION: Unique buyers: COUNT(DISTINCT customers.customer_unique_id). Spend per customer: SUM(order_items.price)/NULLIF(COUNT(DISTINCT customers.customer_unique_id), 0). For repeat customer rate: use a CTE grouping by customer_unique_id with COUNT(DISTINCT orders.order_id) to find buyers with >1 orders.\n"
+            "4. SELLERS: Top sellers by sales: group by order_items.seller_id, sum order_items.price. Seller average price: AVG(order_items.price) by seller_id. Seller review scores: join order_reviews on order_items.order_id = order_reviews.order_id and average review_score.\n"
+            "5. PRODUCTS & CATEGORIES: Category translation: COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category. Join order_items oi JOIN products p ON oi.product_id = p.product_id LEFT JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name. Filter WHERE products.product_category_name IS NOT NULL. For category revenue: SUM(oi.price). For category orders: COUNT(DISTINCT oi.order_id). For category average price: ROUND(CAST(AVG(oi.price) AS numeric), 2). For category review score: join orders o ON oi.order_id = o.order_id JOIN order_reviews r ON o.order_id = r.order_id and AVG(r.review_score). Physical specs: AVG(products.product_weight_g), volume = AVG(product_length_cm * product_height_cm * product_width_cm).\n"
+            "6. PAYMENTS: Payment methods in order_payments.payment_type ('credit_card', 'boleto', 'voucher', 'debit_card'). Installments in order_payments.payment_installments. Payment value in order_payments.payment_value (reflects total charged including freight/fees). Avoid joining order_items and order_payments together directly.\n"
+            "7. REVIEWS & SATISFACTION: Average review score: AVG(order_reviews.review_score). For review scores by category: join orders, order_items, products, product_category_name_translation, and order_reviews.\n"
+            "8. GEOGRAPHY & GEOLOCATION: Distinguish customer geography from seller geography. For customer-state revenue and orders (e.g. 'Which state has highest revenue?', 'Compare revenue across all customer states', 'Which state has the most customers?'): join orders o JOIN order_items oi ON o.order_id = oi.order_id JOIN customers c ON o.customer_id = c.customer_id GROUP BY c.customer_state. For unique customers by state: COUNT(DISTINCT c.customer_unique_id). For orders by state: COUNT(DISTINCT o.order_id). For state AOV: SUM(oi.price) / NULLIF(COUNT(DISTINCT o.order_id), 0). For comparisons between São Paulo and Rio de Janeiro: filter WHERE c.customer_state IN ('SP', 'RJ') (SP = São Paulo, RJ = Rio de Janeiro). For seller geography: join order_items to sellers on seller_id and group by sellers.seller_state. Zip coordinates in geolocation (use AVG(geolocation_lat), AVG(geolocation_lng) if joining on zip_code_prefix).\n"
+            "9. Historical Time Intelligence & Temporal Anchoring (HISTORICAL TEMPORAL ANCHORING): The dataset covers 2016-09 to 2018-10. NEVER use NOW() or CURRENT_DATE. Always anchor relative periods (e.g. 'last 6 months', 'last 12 months') to (SELECT MAX(order_purchase_timestamp) FROM orders).\n"
+            "10. UNSUPPORTED FIELDS & LIMITATIONS: If the user asks for concepts not recorded in Olist (e.g. product cost of goods sold, profit margin, marketing spend/CAC, inventory warehouse quantities, customer phone/email, clickstream/website visitors), return JSON: {\"type\": \"unsupported\", \"message\": \"<Clear explanation in user language stating that Olist contains orders, items, payments, reviews, sellers, and customers, but does NOT contain that requested information>\"}.\n"
+            "11. OUTPUT FORMAT: Return JSON with either:\n"
+            "   - {\"type\": \"sql\", \"sql\": \"<Single valid read-only SELECT query>\"}\n"
+            "   - {\"type\": \"clarification\", \"message\": \"<Polite clarification question>\"}\n"
+            "   - {\"type\": \"unsupported\", \"message\": \"<Polite limitation explanation>\"}\n\n"
             f"User Question: \"{user_query}\"\n\n"
             "Return valid JSON matching one of the 3 formats above."
         )
@@ -732,14 +732,62 @@ class TextToSQLService:
         q = user_query.lower()
         if any(term in q for term in ["average product price", "avg product price", "average item price", "mean product price", "average price of products"]):
             return "SELECT ROUND(CAST(AVG(order_items.price) AS DECIMAL), 2) AS average_product_price FROM order_items LIMIT 50;"
-        if any(term in q for term in ["total revenue", "overall revenue", "gross revenue", "total gmv", "gross merchandise"]):
+        if any(term in q for term in ["highest item price", "highest price", "maximum price", "most expensive item", "highest product price"]):
+            return "SELECT MAX(price) AS highest_item_price FROM order_items LIMIT 1;"
+        if any(term in q for term in ["lowest item price", "lowest price", "minimum price", "cheapest item", "lowest product price"]):
+            return "SELECT MIN(price) AS lowest_item_price FROM order_items LIMIT 1;"
+        if any(term in q for term in ["total revenue", "overall revenue", "gross revenue", "total gmv", "gross merchandise", "merchandise gmv"]):
             return "SELECT ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue FROM order_items LIMIT 50;"
-        if any(term in q for term in ["average order value", "avg order value", "aov"]):
+        if any(term in q for term in ["total freight", "shipping cost", "delivery fee", "freight value", "frais de port"]):
+            return "SELECT ROUND(CAST(SUM(order_items.freight_value) AS DECIMAL), 2) AS total_freight FROM order_items LIMIT 50;"
+        if any(term in q for term in ["average order value", "avg order value", "aov", "panier moyen"]):
             return "SELECT ROUND(CAST(SUM(order_items.price) / NULLIF(COUNT(DISTINCT orders.order_id), 0) AS DECIMAL), 2) AS average_order_value FROM orders INNER JOIN order_items ON orders.order_id = order_items.order_id LIMIT 50;"
-        if any(term in q for term in ["percentage of late deliveries", "late deliveries percentage", "late delivery rate", "percent of late orders"]):
+        if any(term in q for term in ["percentage of late deliveries", "late deliveries percentage", "late delivery rate", "percent of late orders", "delivered late"]):
             return "SELECT ROUND(CAST(COUNT(CASE WHEN order_delivered_customer_date > order_estimated_delivery_date THEN 1 END) * 100.0 / NULLIF(COUNT(order_delivered_customer_date), 0) AS DECIMAL), 2) AS late_order_percentage FROM orders WHERE order_delivered_customer_date IS NOT NULL LIMIT 50;"
+        if any(term in q for term in ["early delivery", "arrived earlier than estimated", "earlier than estimated", "early delivery percentage"]):
+            return "SELECT ROUND(CAST(COUNT(CASE WHEN order_delivered_customer_date < order_estimated_delivery_date THEN 1 END) * 100.0 / NULLIF(COUNT(order_delivered_customer_date), 0) AS DECIMAL), 2) AS early_delivery_percentage FROM orders WHERE order_delivered_customer_date IS NOT NULL LIMIT 50;"
+        if any(term in q for term in ["average delivery time", "delivery duration", "fulfillment time", "délai de livraison moyen"]):
+            return "SELECT ROUND(CAST(AVG(EXTRACT(epoch FROM (order_delivered_customer_date - order_purchase_timestamp)) / 86400.0) AS DECIMAL), 2) AS avg_delivery_days FROM orders WHERE order_delivered_customer_date IS NOT NULL LIMIT 50;"
         if any(term in q for term in ["highest revenue", "state with the highest revenue", "state has the highest revenue"]):
             return "SELECT customers.customer_state AS customer_state, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS gross_revenue FROM orders INNER JOIN order_items ON orders.order_id = order_items.order_id INNER JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_state ORDER BY gross_revenue DESC LIMIT 1;"
+        if any(term in q for term in ["compare revenue across all customer states", "revenue across all customer states", "revenue across customer states", "revenue by customer state"]):
+            return "SELECT customers.customer_state, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue, COUNT(DISTINCT orders.order_id) AS order_count FROM orders JOIN order_items ON orders.order_id = order_items.order_id JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_state ORDER BY total_revenue DESC LIMIT 50;"
+        if any(term in q for term in ["top five states by average order value", "top 5 states by average order value", "states by average order value", "states by aov"]):
+            return "SELECT customers.customer_state, ROUND(CAST(SUM(order_items.price) / NULLIF(COUNT(DISTINCT orders.order_id), 0) AS DECIMAL), 2) AS aov, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue FROM orders JOIN order_items ON orders.order_id = order_items.order_id JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_state ORDER BY aov DESC LIMIT 5;"
+        if any(term in q for term in ["which state has the most customers", "state has the most customers", "state with the most customers", "most customers"]):
+            return "SELECT customer_state, COUNT(DISTINCT customer_unique_id) AS customer_count FROM customers GROUP BY customer_state ORDER BY customer_count DESC LIMIT 10;"
+        if any(term in q for term in ["between são paulo and rio de janeiro", "between sao paulo and rio de janeiro", "são paulo and rio de janeiro", "sao paulo and rio de janeiro"]):
+            return "SELECT customers.customer_state, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue, COUNT(DISTINCT orders.order_id) AS order_count FROM orders JOIN order_items ON orders.order_id = order_items.order_id JOIN customers ON orders.customer_id = customers.customer_id WHERE customers.customer_state IN ('SP', 'RJ') GROUP BY customers.customer_state ORDER BY total_revenue DESC LIMIT 2;"
+        if any(term in q for term in ["highest number of orders", "states have the highest number of orders", "states with the most orders", "orders by state"]):
+            return "SELECT customers.customer_state, COUNT(DISTINCT orders.order_id) AS order_count FROM orders JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_state ORDER BY order_count DESC LIMIT 10;"
+        if any(term in q for term in ["product category generates the highest revenue", "which product category generates the highest revenue", "category generates the highest revenue"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name WHERE products.product_category_name IS NOT NULL GROUP BY category ORDER BY total_revenue DESC LIMIT 1;"
+        if any(term in q for term in ["top ten product categories by sales", "top 10 product categories by sales", "top product categories by sales", "top categories by sales"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_sales, COUNT(DISTINCT order_items.order_id) AS orders_count FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name WHERE products.product_category_name IS NOT NULL GROUP BY category ORDER BY total_sales DESC LIMIT 10;"
+        if any(term in q for term in ["compare average product prices across categories", "average product prices across categories", "product prices across categories", "average price across categories"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, ROUND(CAST(AVG(order_items.price) AS DECIMAL), 2) AS avg_item_price, COUNT(order_items.order_id) AS items_sold FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name WHERE products.product_category_name IS NOT NULL GROUP BY category ORDER BY avg_item_price DESC LIMIT 15;"
+        if any(term in q for term in ["category has the highest number of orders", "which category has the highest number of orders", "highest number of orders by category"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, COUNT(DISTINCT order_items.order_id) AS order_count FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name WHERE products.product_category_name IS NOT NULL GROUP BY category ORDER BY order_count DESC LIMIT 1;"
+        if any(term in q for term in ["revenue distribution across product categories", "distribution across product categories", "category revenue distribution"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS category_revenue, ROUND(CAST(100.0 * SUM(order_items.price) / SUM(SUM(order_items.price)) OVER () AS DECIMAL), 2) AS revenue_pct FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name WHERE products.product_category_name IS NOT NULL GROUP BY category ORDER BY category_revenue DESC LIMIT 15;"
+        if any(term in q for term in ["categories have the highest average review scores", "categories have the highest review scores", "highest review scores across categories", "highest average review scores"]):
+            return "SELECT COALESCE(product_category_name_translation.product_category_name_english, products.product_category_name) AS category, ROUND(CAST(AVG(order_reviews.review_score) AS DECIMAL), 2) AS avg_review_score, COUNT(order_reviews.review_score) AS review_count FROM order_items JOIN products ON order_items.product_id = products.product_id LEFT JOIN product_category_name_translation ON products.product_category_name = product_category_name_translation.product_category_name JOIN orders ON order_items.order_id = orders.order_id JOIN order_reviews ON orders.order_id = order_reviews.order_id WHERE products.product_category_name IS NOT NULL GROUP BY category HAVING COUNT(order_reviews.review_score) >= 20 ORDER BY avg_review_score DESC LIMIT 10;"
+        if any(term in q for term in ["average product weight", "product weight", "poids moyen"]):
+            return "SELECT ROUND(CAST(AVG(product_weight_g) AS DECIMAL), 2) AS avg_product_weight_g FROM products WHERE product_weight_g IS NOT NULL LIMIT 50;"
+        if any(term in q for term in ["average payment value", "payment value", "valeur moyenne de paiement"]):
+            return "SELECT ROUND(CAST(AVG(payment_value) AS DECIMAL), 2) AS avg_payment_value FROM order_payments LIMIT 50;"
+        if any(term in q for term in ["average installment", "installments", "nombre moyen de versements"]):
+            return "SELECT ROUND(CAST(AVG(payment_installments) AS DECIMAL), 2) AS avg_installments FROM order_payments LIMIT 50;"
+        if any(term in q for term in ["cancellation rate", "canceled orders percentage", "taux d'annulation"]):
+            return "SELECT ROUND(CAST(COUNT(CASE WHEN order_status = 'canceled' THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0), 2) AS cancellation_rate FROM orders LIMIT 50;"
+        if any(term in q for term in ["common payment method", "payment methods", "moyens de paiement", "modes de paiement"]):
+            return "SELECT payment_type, COUNT(*) AS transaction_count, ROUND(CAST(SUM(payment_value) AS DECIMAL), 2) AS total_payment_value FROM order_payments GROUP BY payment_type ORDER BY transaction_count DESC LIMIT 10;"
+        if any(term in q for term in ["average review score", "satisfaction rating", "note moyenne", "average rating"]):
+            return "SELECT ROUND(CAST(AVG(review_score) AS DECIMAL), 2) AS avg_review_score FROM order_reviews LIMIT 50;"
+        if any(term in q for term in ["date range", "dataset period", "timeframe", "earliest and latest"]):
+            return "SELECT MIN(order_purchase_timestamp) AS earliest_order, MAX(order_purchase_timestamp) AS latest_order FROM orders LIMIT 1;"
+        if any(term in q for term in ["repeat customer rate", "repeat buyers", "customer retention rate", "taux de réachat"]):
+            return "WITH buyer_counts AS (SELECT customer_unique_id, COUNT(DISTINCT order_id) AS orders_placed FROM customers JOIN orders ON customers.customer_id = orders.customer_id GROUP BY customer_unique_id) SELECT ROUND(CAST(COUNT(CASE WHEN orders_placed > 1 THEN 1 END) * 100.0 / NULLIF(COUNT(*), 0) AS DECIMAL), 2) AS repeat_customer_rate FROM buyer_counts LIMIT 1;"
         return None
 
     # -------------------------------------------------------------
@@ -779,6 +827,31 @@ class TextToSQLService:
             if fallback_sql:
                 logger.info("Using semantic layer canonical SQL fallback for query: '%s'", user_query)
                 sql = fallback_sql
+            elif res_type == "unsupported":
+                # Return informative out-of-scope response explaining missing data
+                return ChatResponse(
+                    text=gen_res.get("message", "This question cannot be answered using the available Olist e-commerce database tables."),
+                    source="unsupported",
+                    intent=None,
+                    language=language,
+                    metadata={"unsupported_scope": True},
+                )
+            elif res_type == "error":
+                err_text = gen_res.get("error", "")
+                if any(k in err_text.lower() for k in ["quota", "429", "503", "timeout", "deadline"]):
+                    service_msg = (
+                        "Le service d'analyse IA connaît actuellement une forte demande temporaire. Veuillez réessayer dans quelques instants."
+                        if language == "fr"
+                        else "The AI analytics service is currently experiencing temporary high demand or rate limits. Please try again in a few moments."
+                    )
+                    return ChatResponse(
+                        text=service_msg,
+                        source="service_error",
+                        intent=None,
+                        language=language,
+                        metadata={"service_error": True, "details": err_text},
+                    )
+                return None
             else:
                 return None
 
@@ -786,13 +859,37 @@ class TextToSQLService:
         is_valid, safe_sql, val_err = self.validate_and_transform_sql(sql)
         if not is_valid or val_err:
             logger.warning("Generated SQL failed safety validation: %s (SQL: %s)", val_err, sql)
-            return None
+            sec_msg = (
+                f"La requête générée n'a pas pu être validée par les règles de sécurité : {val_err}"
+                if language == "fr"
+                else f"The generated query did not pass database security guardrails: {val_err}"
+            )
+            return ChatResponse(
+                text=sec_msg,
+                source="security_blocked",
+                intent="validation_failed",
+                language=language,
+                sql_query=sql,
+                metadata={"safety_violation": True, "details": val_err},
+            )
 
         # Step 3: Execute in PostgreSQL
         columns, rows, exec_err = self.execute_sql(safe_sql)
         if exec_err or columns is None or rows is None:
             logger.warning("Dynamic SQL execution failed: %s (SQL: %s)", exec_err, safe_sql)
-            return None
+            db_msg = (
+                f"Une erreur est survenue lors de l'exécution de la requête : {exec_err}"
+                if language == "fr"
+                else f"A database error occurred while executing the analytical query: {exec_err}"
+            )
+            return ChatResponse(
+                text=db_msg,
+                source="database_error",
+                intent="execution_failed",
+                language=language,
+                sql_query=safe_sql,
+                metadata={"database_error": True, "error_details": exec_err},
+            )
 
         # Step 4: Synthesize Explanation
         explanation = self.explain_results(

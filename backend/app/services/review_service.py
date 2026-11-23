@@ -125,7 +125,13 @@ class ReviewService:
             "compare", "comparer", "relationship", "relation", "correlation",
             "score by", "scores across", "scores by", "delay and review", "delays and review",
             "retard et avis", "average review score", "average rating", "note moyenne",
-            "par catégorie", "across product categories", "by product category"
+            "par catégorie", "across product categories", "by product category",
+            "highest review", "lowest review", "highest rating", "lowest rating",
+            "lowest satisfaction", "highest satisfaction", "lowest score", "highest score",
+            "review score", "review scores", "scores change", "change over time",
+            "which categories", "which states", "which sellers", "sellers with", "sellers receive",
+            "by category", "by state", "by seller", "par état", "par vendeur", "par mois",
+            "rating by", "satisfaction by", "satisfaction across", "review trend"
         ]
         if any(term in q for term in analytical_review_indicators):
             return False
