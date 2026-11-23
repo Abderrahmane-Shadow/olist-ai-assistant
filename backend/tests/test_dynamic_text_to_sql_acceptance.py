@@ -386,6 +386,99 @@ class TestDynamicTextToSQLArchitecture(unittest.TestCase):
         self.assertTrue(any(m.startswith("2018") for m in months))
         self.assertTrue(any(m.startswith("2017") for m in months))
 
+    # -------------------------------------------------------------
+    # 6. Average Product Price & Variations Tests
+    # -------------------------------------------------------------
+    def test_average_product_price_semantic_mapping(self):
+        """Verify semantic layer maps product price variations to average_item_price."""
+        m = self.service.semantic_layer.metrics.get("average_item_price")
+        self.assertIsNotNone(m)
+        self.assertIn("average product price", m.synonyms_en)
+        self.assertIn("average item price", m.synonyms_en)
+        self.assertIn("average price of products", m.synonyms_en)
+        self.assertIn("product price by category", m.synonyms_en)
+        self.assertTrue(any("PRODUCT PRICING LOCATION" in g for g in self.service.semantic_layer.guardrails))
+
+    def test_average_product_price_query_execution(self):
+        """Verify dynamic execution of average product price against order_items."""
+        sql = "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_product_price FROM order_items;"
+        cols, rows = self._execute_and_verify(sql)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("avg_product_price", rows[0])
+        self.assertTrue(100.0 <= float(rows[0]["avg_product_price"]) <= 150.0)
+
+    def test_average_item_price_query_execution(self):
+        """Verify dynamic execution of average item price against order_items."""
+        sql = "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_item_price FROM order_items;"
+        cols, rows = self._execute_and_verify(sql)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("avg_item_price", rows[0])
+        self.assertEqual(rows[0]["avg_item_price"], 120.65)
+
+    def test_average_price_of_products_query_execution(self):
+        """Verify dynamic execution of average price of products."""
+        sql = "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_price FROM order_items;"
+        cols, rows = self._execute_and_verify(sql)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["avg_price"], 120.65)
+
+    def test_average_product_price_by_category_execution(self):
+        """Verify dynamic execution of average product price by category with proper join."""
+        sql = """
+            SELECT COALESCE(t.product_category_name_english, p.product_category_name) AS product_category,
+                   ROUND(CAST(AVG(oi.price) AS numeric), 2) AS avg_product_price,
+                   COUNT(oi.order_item_id) AS items_count
+            FROM order_items oi
+            JOIN products p ON oi.product_id = p.product_id
+            LEFT JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name
+            GROUP BY product_category
+            ORDER BY avg_product_price DESC
+            LIMIT 5;
+        """
+        cols, rows = self._execute_and_verify(sql)
+        self.assertEqual(len(rows), 5)
+        self.assertIn("product_category", rows[0])
+        self.assertIn("avg_product_price", rows[0])
+        # Verify top category has high avg price
+        self.assertGreater(rows[0]["avg_product_price"], 500)
+
+    def test_answer_query_routes_average_product_price_and_variations(self):
+        """Verify TextToSQLService answers all average product price variations."""
+        test_queries = [
+            ("average product price", "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_product_price FROM order_items;"),
+            ("average item price", "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_item_price FROM order_items;"),
+            ("average price of products", "SELECT ROUND(CAST(AVG(price) AS numeric), 2) AS avg_price FROM order_items;"),
+            ("average product price by category", "SELECT p.product_category_name, ROUND(CAST(AVG(oi.price) AS numeric), 2) AS avg_price FROM order_items oi JOIN products p ON oi.product_id = p.product_id GROUP BY p.product_category_name ORDER BY avg_price DESC LIMIT 5;"),
+        ]
+
+        for query, expected_sql in test_queries:
+            with patch.object(self.service, "_call_gemini_with_fallback") as mock_gemini:
+                mock_gemini.return_value = (
+                    f'{{"type": "sql", "sql": "{expected_sql}"}}',
+                    None,
+                )
+                resp = self.service.answer_query(query)
+                self.assertIsNotNone(resp, f"Query '{query}' returned None")
+                self.assertEqual(resp.source, "postgresql")
+                self.assertEqual(resp.intent, "dynamic_sql")
+                self.assertIsNotNone(resp.metrics)
+
+    def test_analytics_registry_recognizes_product_price_variations(self):
+        """Verify static analytics registry recognizes all product price variations as fallback."""
+        from app.services.analytics import AnalyticsService
+        svc = AnalyticsService(db=None)
+        for q in [
+            "average product price",
+            "average item price",
+            "average price of products",
+            "product price",
+            "mean product price",
+            "prix moyen des produits",
+        ]:
+            intent = svc.classify_intent(q)
+            self.assertEqual(intent, "average_item_price", f"Query '{q}' classified as '{intent}' instead of 'average_item_price'")
+
+
 
 
 if __name__ == "__main__":

@@ -302,11 +302,19 @@ class TextToSQLService:
         if history:
             turns = []
             for h in history[-6:]:
-                turn_str = f"{h.role.capitalize()}: {h.text}"
+                text_clean = h.text or ""
+                # Strip out previous refusal/fallback messages and errors from assistant turns to prevent hallucinated refusals
+                if h.role == "assistant":
+                    if "not yet covered by our safe PostgreSQL analytics registry" in text_clean:
+                        continue
+                    if "A database error occurred" in text_clean:
+                        continue
+                turn_str = f"{h.role.capitalize()}: {text_clean}"
                 if getattr(h, "sql_query", None):
                     turn_str += f"\n  [Executed SQL]: {h.sql_query}"
                 turns.append(turn_str)
-            history_context = "RECENT CONVERSATION HISTORY:\n" + "\n".join(turns) + "\n\n"
+            if turns:
+                history_context = "RECENT CONVERSATION HISTORY:\n" + "\n".join(turns) + "\n\n"
 
         lang_instruction = (
             "The user question is in French. If clarification is needed, write the clarification message in natural French."
@@ -335,8 +343,10 @@ class TextToSQLService:
             "  * If a follow-up is too vague, elliptical, or ambiguous to understand what metric is requested (e.g. 'And then?', 'More?', 'What else?'), return:\n"
             "    {\"type\": \"clarification\", \"message\": \"<Polite clarification in the user's language asking which metric or dimension they want>\"}.\n\n"
             "GENERAL INSTRUCTIONS:\n"
-            "1. If the user asks an analytical or data question about Olist (orders, products, revenue, customers, sellers, freight, reviews, payments, dates, correlations, distributions, state comparisons, delay vs reviews):\n"
+            "1. If the user asks an analytical or data question about Olist (orders, products, product prices, item prices, revenue, customers, sellers, freight, reviews, payments, dates, correlations, distributions, state comparisons, delay vs reviews, pricing by category):\n"
             "   - Generate a single read-only PostgreSQL SELECT query utilizing the canonical formulas and join keys defined in the semantic layer above.\n"
+            "   - Important: Product prices are stored in order_items.price (the products table does NOT contain a price column). For average product price, calculate AVG(order_items.price).\n"
+            "   - When calculating average product price by category, join order_items to products on order_items.product_id = products.product_id and left join product_category_name_translation.\n"
             "   - Return JSON with {\"type\": \"sql\", \"sql\": \"<SELECT query>\"}.\n"
             "   - Always alias calculated columns clearly (e.g. total_revenue, avg_order_value, order_count, late_pct, avg_delay_days, avg_rating).\n"
             "   - Always include a reasonable LIMIT (e.g. LIMIT 10 or LIMIT 20 for rankings/breakdowns; omit or LIMIT 1 for single scalars).\n"
@@ -367,7 +377,7 @@ class TextToSQLService:
                 elapsed_ms,
                 call_err,
             )
-            return {"type": "unsupported", "error": call_err}
+            return {"type": "error", "error": call_err}
 
         try:
             data = json.loads(resp_text)
@@ -717,6 +727,21 @@ class TextToSQLService:
 
         return "\n".join(lines)
 
+    def _synthesize_canonical_sql(self, user_query: str) -> Optional[str]:
+        """Synthesize verified SQL for canonical business metrics if Gemini encounters a timeout or rate limit."""
+        q = user_query.lower()
+        if any(term in q for term in ["average product price", "avg product price", "average item price", "mean product price", "average price of products"]):
+            return "SELECT ROUND(CAST(AVG(order_items.price) AS DECIMAL), 2) AS average_product_price FROM order_items LIMIT 50;"
+        if any(term in q for term in ["total revenue", "overall revenue", "gross revenue", "total gmv", "gross merchandise"]):
+            return "SELECT ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS total_revenue FROM order_items LIMIT 50;"
+        if any(term in q for term in ["average order value", "avg order value", "aov"]):
+            return "SELECT ROUND(CAST(SUM(order_items.price) / NULLIF(COUNT(DISTINCT orders.order_id), 0) AS DECIMAL), 2) AS average_order_value FROM orders INNER JOIN order_items ON orders.order_id = order_items.order_id LIMIT 50;"
+        if any(term in q for term in ["percentage of late deliveries", "late deliveries percentage", "late delivery rate", "percent of late orders"]):
+            return "SELECT ROUND(CAST(COUNT(CASE WHEN order_delivered_customer_date > order_estimated_delivery_date THEN 1 END) * 100.0 / NULLIF(COUNT(order_delivered_customer_date), 0) AS DECIMAL), 2) AS late_order_percentage FROM orders WHERE order_delivered_customer_date IS NOT NULL LIMIT 50;"
+        if any(term in q for term in ["highest revenue", "state with the highest revenue", "state has the highest revenue"]):
+            return "SELECT customers.customer_state AS customer_state, ROUND(CAST(SUM(order_items.price) AS DECIMAL), 2) AS gross_revenue FROM orders INNER JOIN order_items ON orders.order_id = order_items.order_id INNER JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_state ORDER BY gross_revenue DESC LIMIT 1;"
+        return None
+
     # -------------------------------------------------------------
     # 5. End-to-End Dynamic SQL Processing
     # -------------------------------------------------------------
@@ -746,13 +771,16 @@ class TextToSQLService:
                 metadata={"requires_clarification": True},
             )
 
-        # Query outside Olist scope
-        if res_type == "unsupported":
-            return None
-
+        # Query outside Olist scope or error during generation
         sql = gen_res.get("sql")
-        if not sql:
-            return None
+        if not sql or res_type in ("unsupported", "error"):
+            # Attempt canonical metric SQL synthesis as resilience fallback
+            fallback_sql = self._synthesize_canonical_sql(user_query)
+            if fallback_sql:
+                logger.info("Using semantic layer canonical SQL fallback for query: '%s'", user_query)
+                sql = fallback_sql
+            else:
+                return None
 
         # Step 2: Validate and Transform SQL AST
         is_valid, safe_sql, val_err = self.validate_and_transform_sql(sql)

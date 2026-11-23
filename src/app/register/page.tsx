@@ -14,6 +14,7 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isAlreadyRegistered, setIsAlreadyRegistered] = useState(false);
   const [success, setSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -22,7 +23,15 @@ export default function RegisterPage() {
     if (isSubmitting) return;
 
     setError(null);
+    setIsAlreadyRegistered(false);
     setSuccess(null);
+
+    const trimmedEmail = email.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setError('Please enter a valid email address.');
+      return;
+    }
 
     if (password.length < 6) {
       setError('Password must be at least 6 characters long.');
@@ -37,9 +46,21 @@ export default function RegisterPage() {
     setIsSubmitting(true);
 
     try {
-      const res = await signUp(email.trim(), password, displayName.trim());
-      if (res.error) {
-        setError(res.error);
+      const res = await signUp(trimmedEmail, password, displayName.trim());
+      if (res.alreadyExists) {
+        setIsAlreadyRegistered(true);
+        setError('This email address is already registered. Please sign in or reset your password.');
+        setIsSubmitting(false);
+      } else if (res.error) {
+        if (
+          res.error.toLowerCase().includes('already registered') ||
+          res.error.toLowerCase().includes('already exists')
+        ) {
+          setIsAlreadyRegistered(true);
+          setError('This email address is already registered. Please sign in or reset your password.');
+        } else {
+          setError(res.error);
+        }
         setIsSubmitting(false);
       } else {
         setSuccess('Registration successful! A confirmation email has been sent to your address. Please click the link in your email to confirm your account and sign in.');
@@ -70,12 +91,39 @@ export default function RegisterPage() {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-8 px-6 shadow-sm border border-gray-200 sm:rounded-xl sm:px-10">
-          {error && (
+          {isAlreadyRegistered ? (
+            <div className="mb-5 p-3.5 rounded-lg bg-amber-50 border border-amber-200 flex flex-col gap-2.5 text-xs text-amber-900">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-semibold text-amber-900">Account already exists</p>
+                  <p className="text-amber-800 leading-relaxed">
+                    This email address is already registered. Please sign in or reset your password.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 pl-6 pt-1 text-xs">
+                <Link
+                  href="/login"
+                  className="font-semibold text-[#169b75] hover:text-[#0f7a5c] hover:underline"
+                >
+                  Sign in &rarr;
+                </Link>
+                <span className="text-amber-300">|</span>
+                <Link
+                  href="/forgot-password"
+                  className="font-semibold text-gray-700 hover:text-gray-900 hover:underline"
+                >
+                  Reset password
+                </Link>
+              </div>
+            </div>
+          ) : error ? (
             <div className="mb-5 p-3 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-xs text-red-700">
               <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
-          )}
+          ) : null}
 
           {success && (
             <div className="mb-5 p-3 rounded-lg bg-green-50 border border-green-200 flex items-start gap-2.5 text-xs text-[#0f7a5c]">

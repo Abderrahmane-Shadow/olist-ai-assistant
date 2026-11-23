@@ -116,14 +116,26 @@ SEMANTIC_METRICS: Dict[str, SemanticMetric] = {
     ),
     "average_item_price": SemanticMetric(
         name="average_item_price",
-        label="Average Item Price",
+        label="Average Item / Product Price",
         formula="AVG(order_items.price)",
         unit="BRL (R$)",
-        description="Mean selling price per individual order item.",
-        synonyms_en=["average price", "avg price", "mean item price", "average item cost"],
-        synonyms_fr=["prix moyen", "prix unitaire moyen", "coût moyen par article"],
-        synonyms_pt=["preço médio", "valor médio por item"],
-        aggregation_rule="Compute AVG(order_items.price).",
+        description="Mean selling price per individual order item or product across the catalog.",
+        synonyms_en=[
+            "average item price", "average price", "avg price", "mean item price", "average item cost",
+            "average product price", "product price", "average price of products",
+            "mean product price", "product cost", "product prices", "item price",
+            "average price by category", "product price by category"
+        ],
+        synonyms_fr=[
+            "prix moyen", "prix unitaire moyen", "coût moyen par article",
+            "prix moyen du produit", "prix moyen des produits", "prix du produit",
+            "prix des produits", "prix moyen par catégorie"
+        ],
+        synonyms_pt=[
+            "preço médio", "valor médio por item", "preço médio do produto",
+            "preço do produto", "preço médio dos produtos", "preço dos produtos"
+        ],
+        aggregation_rule="Compute AVG(order_items.price). Note: Product prices are stored in order_items.price (the products table does NOT contain a price column).",
         required_tables=["order_items"],
     ),
     "average_review_score": SemanticMetric(
@@ -314,6 +326,7 @@ AGGREGATION_GUARDRAILS: List[str] = [
     "DATE FORMATTING: Format monthly time series with TO_CHAR(orders.order_purchase_timestamp, 'YYYY-MM').",
     "HISTORICAL TEMPORAL ANCHORING: The Olist dataset is a bounded historical dataset (September 2016 to October 2018). NEVER use NOW() or CURRENT_DATE as the reference point for relative analytical periods. Always anchor relative time expressions ('last 6 months', 'last 12 months', 'previous month', 'recent trends') to MAX(orders.order_purchase_timestamp) or a subquery: (SELECT MAX(order_purchase_timestamp) FROM orders). For example: orders.order_purchase_timestamp >= (SELECT MAX(order_purchase_timestamp) FROM orders) - INTERVAL '6 months'.",
     "NUMERIC ROUNDING: Use ROUND(CAST(<expr> AS numeric), 2) for currency and percentage fields.",
+    "PRODUCT PRICING LOCATION: Product prices are stored in order_items.price. The products table does NOT contain a price column. For any question regarding average product price, item price, or product price by category/dimension, use AVG(order_items.price) (joining products and product_category_name_translation when category breakdown is requested).",
 ]
 
 

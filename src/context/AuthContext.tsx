@@ -27,7 +27,7 @@ interface AuthContextType {
   dailyUsage: DailyUsage | null;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<{ error?: string }>;
-  signUp: (email: string, password: string, displayName?: string) => Promise<{ error?: string }>;
+  signUp: (email: string, password: string, displayName?: string) => Promise<{ error?: string; alreadyExists?: boolean }>;
   signInWithGoogle: () => Promise<{ error?: string }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error?: string }>;
@@ -165,7 +165,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signUp = async (email: string, password: string, displayName?: string) => {
+  const signUp = async (
+    email: string,
+    password: string,
+    displayName?: string
+  ): Promise<{ error?: string; alreadyExists?: boolean }> => {
     try {
       const redirectUrl =
         typeof window !== 'undefined' ? `${window.location.origin}/auth/callback` : undefined;
@@ -179,7 +183,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         },
       });
-      if (error) return { error: error.message };
+      if (error) {
+        const msg = error.message.toLowerCase();
+        if (
+          msg.includes('already registered') ||
+          msg.includes('already exists') ||
+          msg.includes('email_exists') ||
+          msg.includes('user already exists')
+        ) {
+          return {
+            error: 'This email address is already registered. Please sign in or reset your password.',
+            alreadyExists: true,
+          };
+        }
+        return { error: error.message };
+      }
+
+      // Supabase email enumeration protection:
+      // When email confirmation is enabled and the user already exists, Supabase returns
+      // data.user with an empty identities list (identities.length === 0) and data.session === null
+      if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        return {
+          error: 'This email address is already registered. Please sign in or reset your password.',
+          alreadyExists: true,
+        };
+      }
 
       if (data?.session) {
         setSession(data.session);

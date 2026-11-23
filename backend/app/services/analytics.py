@@ -293,8 +293,12 @@ class AnalyticsService:
 
         if any(p in clean_q for p in [
             "average item price", "avg item price", "average price", "avg price",
+            "average product price", "average price of products", "product price",
+            "mean product price", "price of products",
             "mean price", "mean item price", "price per item",
-            "prix moyen", "prix moyen d un article", "prix moyen par article"
+            "prix moyen", "prix moyen d un article", "prix moyen par article",
+            "prix moyen des produits", "prix moyen du produit", "prix du produit",
+            "preço médio do produto", "preço médio dos produtos"
         ]):
             return "average_item_price"
 
