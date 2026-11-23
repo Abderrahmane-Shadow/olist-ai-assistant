@@ -116,8 +116,18 @@ class ReviewService:
         """Determines if the user's question is asking about reviews, feedback, sentiment, or complaints."""
         q = query.lower().strip()
 
-        # Pure scalar count questions should go to standard SQL / analytics registry
+        # Pure scalar count or quantitative review aggregations should go to dynamic Text-to-SQL
         if re.search(r"^(total (of )?reviews|how many reviews( are there)?|number of reviews|nombre d'avis|total des avis)\??$", q):
+            return False
+
+        # Analytical/statistical queries (cross-dimensional comparisons, delays vs reviews, correlations, averages by dimension)
+        analytical_review_indicators = [
+            "compare", "comparer", "relationship", "relation", "correlation",
+            "score by", "scores across", "scores by", "delay and review", "delays and review",
+            "retard et avis", "average review score", "average rating", "note moyenne",
+            "par catégorie", "across product categories", "by product category"
+        ]
+        if any(term in q for term in analytical_review_indicators):
             return False
 
         # Direct review keywords in EN / FR / PT

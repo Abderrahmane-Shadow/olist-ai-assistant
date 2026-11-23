@@ -35,21 +35,13 @@ from app.config import get_settings
 from app.database import SessionReadOnly, readonly_engine
 from app.schemas.chat import ChatResponse, MetricCard, Breakdown, BreakdownItem, MessageHistoryItem, ChartConfig
 from app.services.chart_service import detect_and_build_chart
+from app.services.schema_explorer import APPROVED_ANALYTICAL_TABLES, get_schema_explorer
+from app.services.semantic_layer import get_semantic_layer
 
 logger = logging.getLogger("olist.services.text_to_sql")
 
 # Whitelist of approved public Olist tables
-APPROVED_TABLES = {
-    "customers",
-    "geolocation",
-    "order_items",
-    "order_payments",
-    "order_reviews",
-    "orders",
-    "product_category_name_translation",
-    "products",
-    "sellers",
-}
+APPROVED_TABLES = set(APPROVED_ANALYTICAL_TABLES)
 
 # Dangerous / administrative PostgreSQL functions that must be blocked
 DANGEROUS_FUNCTIONS = {
@@ -182,6 +174,8 @@ class TextToSQLService:
         self.model_name = self.settings.GEMINI_MODEL or "gemini-3.5-flash-lite"
         self.fallback_model = getattr(self.settings, "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite") or "gemini-3.5-flash-lite"
         self.timeout_ms = getattr(self.settings, "GEMINI_REQUEST_TIMEOUT", 10000) or 10000
+        self.schema_explorer = get_schema_explorer()
+        self.semantic_layer = get_semantic_layer()
 
         if self.settings.GEMINI_API_KEY and self.settings.GEMINI_API_KEY.strip():
             try:
@@ -230,7 +224,7 @@ class TextToSQLService:
 
         # Try primary model first, followed by valid active Google AI models
         models_to_try = [self.model_name]
-        for candidate in [self.fallback_model, "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]:
+        for candidate in ["gemini-3.5-flash", "gemini-3.7-flash", self.fallback_model, "gemini-3.5-flash-lite", "gemini-3.8-flash"]:
             if candidate and candidate not in models_to_try:
                 models_to_try.append(candidate)
 
@@ -320,12 +314,15 @@ class TextToSQLService:
             else "The user question is in English. If clarification is needed, write the clarification message in clear English."
         )
 
+        dynamic_schema = self.schema_explorer.format_schema_for_llm()
+        dynamic_semantic = self.semantic_layer.format_semantic_layer_for_llm()
+
         prompt = (
             "You are an expert PostgreSQL analytics AI for the Brazilian Olist e-commerce database.\n"
             f"{lang_instruction}\n\n"
             f"{history_context}"
-            "DATABASE SCHEMA & RECIPES:\n"
-            f"{OLIST_SCHEMA_CONTEXT}\n\n"
+            f"{dynamic_schema}\n\n"
+            f"{dynamic_semantic}\n\n"
             "CONVERSATIONAL MEMORY & FOLLOW-UP INSTRUCTIONS:\n"
             "When RECENT CONVERSATION HISTORY is present above, the user's latest question may be an elliptical follow-up that references entities, filters, categories, sellers, or states from previous turns.\n"
             "- Resolve anaphoric references:\n"
@@ -338,17 +335,18 @@ class TextToSQLService:
             "  * If a follow-up is too vague, elliptical, or ambiguous to understand what metric is requested (e.g. 'And then?', 'More?', 'What else?'), return:\n"
             "    {\"type\": \"clarification\", \"message\": \"<Polite clarification in the user's language asking which metric or dimension they want>\"}.\n\n"
             "GENERAL INSTRUCTIONS:\n"
-            "1. If the user asks an analytical or data question about Olist (orders, products, revenue, customers, sellers, freight, reviews, payments, dates, correlations, distributions):\n"
-            "   - Generate a single read-only PostgreSQL SELECT query.\n"
+            "1. If the user asks an analytical or data question about Olist (orders, products, revenue, customers, sellers, freight, reviews, payments, dates, correlations, distributions, state comparisons, delay vs reviews):\n"
+            "   - Generate a single read-only PostgreSQL SELECT query utilizing the canonical formulas and join keys defined in the semantic layer above.\n"
             "   - Return JSON with {\"type\": \"sql\", \"sql\": \"<SELECT query>\"}.\n"
-            "   - Always alias calculated columns clearly (e.g. total_revenue, avg_price, order_count).\n"
+            "   - Always alias calculated columns clearly (e.g. total_revenue, avg_order_value, order_count, late_pct, avg_delay_days, avg_rating).\n"
             "   - Always include a reasonable LIMIT (e.g. LIMIT 10 or LIMIT 20 for rankings/breakdowns; omit or LIMIT 1 for single scalars).\n"
-            "   - Use proper JOIN keys as defined in the schema.\n"
-            "   - Only query the 9 approved public tables. Never use DDL or DML.\n"
+            "   - Use proper JOIN keys as defined in the semantic join relationships.\n"
+            "   - Only query the approved public tables. Never use DDL or DML.\n"
             "2. If the user question is analytical but heavily ambiguous or missing required parameters (e.g. 'compare revenue' without specifying by what dimension, or 'show me orders' without any criteria):\n"
             "   - Return JSON with {\"type\": \"clarification\", \"message\": \"<Polite clarification question suggesting options>\"}.\n"
             "3. If the query is completely outside the domain of Olist e-commerce analytics:\n"
-            "   - Return JSON with {\"type\": \"unsupported\", \"message\": \"<Polite explanation of what Olist analytics capabilities are supported>\"}.\n\n"
+            "   - Return JSON with {\"type\": \"unsupported\", \"message\": \"<Polite explanation of what Olist analytics capabilities are supported>\"}.\n"
+            "4. Historical Time Intelligence: The Olist database is historical (September 2016 to October 2018). NEVER use NOW() or CURRENT_DATE for relative analytical periods (e.g., 'last 6 months', 'last 12 months', 'previous month', 'recent trends'). Always anchor relative date filters using (SELECT MAX(order_purchase_timestamp) FROM orders), e.g.: WHERE orders.order_purchase_timestamp >= (SELECT MAX(order_purchase_timestamp) FROM orders) - INTERVAL '6 months'.\n\n"
             f"User Question: \"{user_query}\"\n\n"
             "Return valid JSON matching one of the 3 formats above."
         )
@@ -357,7 +355,7 @@ class TextToSQLService:
             prompt=prompt,
             response_mime_type="application/json",
             temperature=0.0,
-            max_output_tokens=400,
+            max_output_tokens=800,
         )
 
         elapsed_ms = (time.perf_counter() - start_stage) * 1000
@@ -624,7 +622,7 @@ class TextToSQLService:
                 "1. Exact Numbers & Grounding: State the exact figures directly from the query data. Never alter, round inappropriately, or invent metrics, rankings, or percentages.\n"
                 "2. Executive Interpretation: Provide clear business meaning behind the data. Highlight top drivers, outliers, and key operational takeaways.\n"
                 "3. Correlation vs. Causation: Strictly distinguish statistical correlation from causal links (e.g. between freight cost and product price, or delivery delays and ratings). Do not claim causation without direct evidence.\n"
-                "4. Data Limitations: If the returned data only partially addresses the user's broader 'why' question, honestly state the dataset's scope limitations.\n"
+                "4. Historical Scope & Limitations: The Olist dataset is historical (2016-2018). Frame time observations within this historical window rather than implying current business operations, and state dataset limitations if data only partially addresses the user's question.\n"
                 "5. Actionable Recommendations: Offer realistic, data-backed operational actions where relevant.\n"
                 "6. Format: Structure cleanly with GitHub Markdown (headings ###, bold key metrics, bulleted lists)."
             )
